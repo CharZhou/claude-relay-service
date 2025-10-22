@@ -52,7 +52,7 @@ class ClaudeConsoleRelayService {
         'slow down',
         '请求过于频繁',
         '频率限制',
-        '您的积分不足'
+        '积分不足'
       ]
 
       // 检查是否匹配任何限流关键词

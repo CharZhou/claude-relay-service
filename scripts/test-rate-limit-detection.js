@@ -261,7 +261,7 @@ async function testKeywordMatching() {
     'slow down',
     '请求过于频繁',
     '频率限制',
-    '您的积分不足'
+    '积分不足'
   ]
 
   console.log('📝 Testing all keywords:\n')
