@@ -14,6 +14,89 @@ class ClaudeConsoleRelayService {
     this.defaultUserAgent = 'claude-cli/1.0.69 (external, cli)'
   }
 
+  // 🔍 检测错误消息中是否包含限流相关内容
+  _isRateLimitError(responseData) {
+    try {
+      let errorMessage = ''
+
+      // 提取错误消息
+      if (typeof responseData === 'string') {
+        errorMessage = responseData
+        // 尝试解析为 JSON
+        try {
+          const parsed = JSON.parse(responseData)
+          errorMessage = this._extractErrorMessage(parsed)
+        } catch (e) {
+          // 保持原始字符串
+        }
+      } else if (typeof responseData === 'object') {
+        errorMessage = this._extractErrorMessage(responseData)
+      }
+
+      if (!errorMessage) {
+        return false
+      }
+
+      // 转换为小写进行匹配
+      const lowerMessage = errorMessage.toLowerCase()
+
+      // 限流相关的关键词列表
+      const rateLimitPatterns = [
+        'rate limit',
+        'rate_limit',
+        'ratelimit',
+        'too many requests',
+        'request limit',
+        'quota exceeded',
+        'throttled',
+        'slow down',
+        '请求过于频繁',
+        '频率限制',
+        '您的积分不足'
+      ]
+
+      // 检查是否匹配任何限流关键词
+      return rateLimitPatterns.some((pattern) => lowerMessage.includes(pattern))
+    } catch (error) {
+      logger.debug('Error checking rate limit message:', error)
+      return false
+    }
+  }
+
+  // 🧾 提取错误消息文本
+  _extractErrorMessage(body) {
+    if (!body) {
+      return ''
+    }
+
+    if (typeof body === 'string') {
+      return body
+    }
+
+    if (typeof body === 'object') {
+      // 尝试多种常见的错误消息字段
+      if (typeof body.error === 'string') {
+        return body.error
+      }
+      if (body.error && typeof body.error === 'object') {
+        if (typeof body.error.message === 'string') {
+          return body.error.message
+        }
+        if (typeof body.error.error === 'string') {
+          return body.error.error
+        }
+      }
+      if (typeof body.message === 'string') {
+        return body.message
+      }
+      if (typeof body.detail === 'string') {
+        return body.detail
+      }
+    }
+
+    return ''
+  }
+
   // 🚀 转发请求到Claude Console API
   async relayRequest(
     requestBody,
@@ -236,10 +319,19 @@ class ClaudeConsoleRelayService {
           logger.error('❌ Failed to check quota after 429 error:', err)
         })
 
-        await claudeConsoleAccountService.markAccountRateLimited(accountId)
+        await claudeConsoleAccountService.markAccountRateLimited(accountId, 'HTTP 429')
       } else if (response.status === 529) {
         logger.warn(`🚫 Overload error detected for Claude Console account ${accountId}`)
         await claudeConsoleAccountService.markAccountOverloaded(accountId)
+      } else if (response.status >= 400 && this._isRateLimitError(response.data)) {
+        // 🔍 通过错误消息检测到限流
+        logger.warn(
+          `🚫 Rate limit detected by error message for Claude Console account ${accountId} (status: ${response.status})`
+        )
+        await claudeConsoleAccountService.markAccountRateLimited(
+          accountId,
+          'error message pattern match'
+        )
       } else if (response.status === 200 || response.status === 201) {
         // 如果请求成功，检查并移除错误状态
         const isRateLimited = await claudeConsoleAccountService.isAccountRateLimited(accountId)
@@ -499,13 +591,22 @@ class ClaudeConsoleRelayService {
                   errorDataForCheck
                 )
               } else if (response.status === 429) {
-                await claudeConsoleAccountService.markAccountRateLimited(accountId)
+                await claudeConsoleAccountService.markAccountRateLimited(accountId, 'HTTP 429')
                 // 检查是否因为超过每日额度
                 claudeConsoleAccountService.checkQuotaUsage(accountId).catch((err) => {
                   logger.error('❌ Failed to check quota after 429 error:', err)
                 })
               } else if (response.status === 529) {
                 await claudeConsoleAccountService.markAccountOverloaded(accountId)
+              } else if (response.status >= 400 && this._isRateLimitError(errorDataForCheck)) {
+                // 🔍 通过错误消息检测到限流
+                logger.warn(
+                  `🚫 [Stream] Rate limit detected by error message for Claude Console account ${accountId} (status: ${response.status})`
+                )
+                await claudeConsoleAccountService.markAccountRateLimited(
+                  accountId,
+                  'error message pattern match'
+                )
               }
 
               // 设置响应头
@@ -817,7 +918,7 @@ class ClaudeConsoleRelayService {
             if (error.response.status === 401) {
               claudeConsoleAccountService.markAccountUnauthorized(accountId)
             } else if (error.response.status === 429) {
-              claudeConsoleAccountService.markAccountRateLimited(accountId)
+              claudeConsoleAccountService.markAccountRateLimited(accountId, 'HTTP 429')
               // 检查是否因为超过每日额度
               claudeConsoleAccountService.checkQuotaUsage(accountId).catch((err) => {
                 logger.error('❌ Failed to check quota after 429 error:', err)

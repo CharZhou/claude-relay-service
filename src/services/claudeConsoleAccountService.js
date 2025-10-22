@@ -443,7 +443,7 @@ class ClaudeConsoleAccountService {
   }
 
   // 🚫 标记账号为限流状态
-  async markAccountRateLimited(accountId) {
+  async markAccountRateLimited(accountId, reason = '429 error') {
     try {
       const client = redis.getClientSafe()
       const account = await this.getAccount(accountId)
@@ -465,7 +465,7 @@ class ClaudeConsoleAccountService {
         rateLimitStatus: 'limited',
         isActive: 'false', // 禁用账户
         schedulable: 'false', // 停止调度，与其他平台保持一致
-        errorMessage: `Rate limited at ${new Date().toISOString()}`,
+        errorMessage: `Rate limited at ${new Date().toISOString()} (${reason})`,
         // 使用独立的限流自动停止标记
         rateLimitAutoStopped: 'true'
       }
@@ -489,7 +489,7 @@ class ClaudeConsoleAccountService {
           platform: 'claude-console',
           status: 'error',
           errorCode: 'CLAUDE_CONSOLE_RATE_LIMITED',
-          reason: `Account rate limited (429 error) and has been disabled. ${account.rateLimitDuration ? `Will be automatically re-enabled after ${account.rateLimitDuration} minutes` : 'Manual intervention required to re-enable'}`,
+          reason: `Account rate limited (${reason}) and has been disabled. ${account.rateLimitDuration ? `Will be automatically re-enabled after ${account.rateLimitDuration} minutes` : 'Manual intervention required to re-enable'}`,
           timestamp: getISOStringWithTimezone(new Date())
         })
       } catch (webhookError) {
@@ -497,7 +497,7 @@ class ClaudeConsoleAccountService {
       }
 
       logger.warn(
-        `🚫 Claude Console account marked as rate limited: ${account.name} (${accountId})`
+        `🚫 Claude Console account marked as rate limited: ${account.name} (${accountId}), reason: ${reason}`
       )
       return { success: true }
     } catch (error) {

@@ -1272,7 +1272,12 @@ class ClaudeAccountService {
   }
 
   // 🚫 标记账号为限流状态
-  async markAccountRateLimited(accountId, sessionHash = null, rateLimitResetTimestamp = null) {
+  async markAccountRateLimited(
+    accountId,
+    sessionHash = null,
+    rateLimitResetTimestamp = null,
+    reason = '429 error'
+  ) {
     try {
       const accountData = await redis.getClaudeAccount(accountId)
       if (!accountData || Object.keys(accountData).length === 0) {
@@ -1302,7 +1307,7 @@ class ClaudeAccountService {
         const now = new Date()
         const minutesUntilEnd = Math.ceil((resetTime - now) / (1000 * 60))
         logger.warn(
-          `🚫 Account marked as rate limited with accurate reset time: ${accountData.name} (${accountId}) - ${minutesUntilEnd} minutes remaining until ${resetTime.toISOString()}`
+          `🚫 Account marked as rate limited with accurate reset time: ${accountData.name} (${accountId}) - ${minutesUntilEnd} minutes remaining until ${resetTime.toISOString()}, reason: ${reason}`
         )
       } else {
         // 获取或创建会话窗口（预估方式）
@@ -1316,14 +1321,14 @@ class ClaudeAccountService {
           const now = new Date()
           const minutesUntilEnd = Math.ceil((windowEnd - now) / (1000 * 60))
           logger.warn(
-            `🚫 Account marked as rate limited until estimated session window ends: ${accountData.name} (${accountId}) - ${minutesUntilEnd} minutes remaining`
+            `🚫 Account marked as rate limited until estimated session window ends: ${accountData.name} (${accountId}) - ${minutesUntilEnd} minutes remaining, reason: ${reason}`
           )
         } else {
           // 如果没有会话窗口，使用默认1小时（兼容旧逻辑）
           const oneHourLater = new Date(Date.now() + 60 * 60 * 1000)
           updatedAccountData.rateLimitEndAt = oneHourLater.toISOString()
           logger.warn(
-            `🚫 Account marked as rate limited (1 hour default): ${accountData.name} (${accountId})`
+            `🚫 Account marked as rate limited (1 hour default): ${accountData.name} (${accountId}), reason: ${reason}`
           )
         }
       }
@@ -1345,7 +1350,7 @@ class ClaudeAccountService {
           platform: 'claude-oauth',
           status: 'error',
           errorCode: 'CLAUDE_OAUTH_RATE_LIMITED',
-          reason: `Account rate limited (429 error). ${rateLimitResetTimestamp ? `Reset at: ${formatDateWithTimezone(rateLimitResetTimestamp)}` : 'Estimated reset in 1-5 hours'}`,
+          reason: `Account rate limited (${reason}). ${rateLimitResetTimestamp ? `Reset at: ${formatDateWithTimezone(rateLimitResetTimestamp)}` : 'Estimated reset in 1-5 hours'}`,
           timestamp: getISOStringWithTimezone(new Date())
         })
       } catch (webhookError) {

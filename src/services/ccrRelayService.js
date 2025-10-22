@@ -10,6 +10,89 @@ class CcrRelayService {
     this.defaultUserAgent = 'claude-relay-service/1.0.0'
   }
 
+  // 🔍 检测错误消息中是否包含限流相关内容
+  _isRateLimitError(responseData) {
+    try {
+      let errorMessage = ''
+
+      // 提取错误消息
+      if (typeof responseData === 'string') {
+        errorMessage = responseData
+        // 尝试解析为 JSON
+        try {
+          const parsed = JSON.parse(responseData)
+          errorMessage = this._extractErrorMessage(parsed)
+        } catch (e) {
+          // 保持原始字符串
+        }
+      } else if (typeof responseData === 'object') {
+        errorMessage = this._extractErrorMessage(responseData)
+      }
+
+      if (!errorMessage) {
+        return false
+      }
+
+      // 转换为小写进行匹配
+      const lowerMessage = errorMessage.toLowerCase()
+
+      // 限流相关的关键词列表
+      const rateLimitPatterns = [
+        'rate limit',
+        'rate_limit',
+        'ratelimit',
+        'too many requests',
+        'request limit',
+        'quota exceeded',
+        'throttled',
+        'slow down',
+        '请求过于频繁',
+        '频率限制',
+        '您的积分不足'
+      ]
+
+      // 检查是否匹配任何限流关键词
+      return rateLimitPatterns.some((pattern) => lowerMessage.includes(pattern))
+    } catch (error) {
+      logger.debug('Error checking rate limit message:', error)
+      return false
+    }
+  }
+
+  // 🧾 提取错误消息文本
+  _extractErrorMessage(body) {
+    if (!body) {
+      return ''
+    }
+
+    if (typeof body === 'string') {
+      return body
+    }
+
+    if (typeof body === 'object') {
+      // 尝试多种常见的错误消息字段
+      if (typeof body.error === 'string') {
+        return body.error
+      }
+      if (body.error && typeof body.error === 'object') {
+        if (typeof body.error.message === 'string') {
+          return body.error.message
+        }
+        if (typeof body.error.error === 'string') {
+          return body.error.error
+        }
+      }
+      if (typeof body.message === 'string') {
+        return body.message
+      }
+      if (typeof body.detail === 'string') {
+        return body.detail
+      }
+    }
+
+    return ''
+  }
+
   // 🚀 转发请求到CCR API
   async relayRequest(
     requestBody,
@@ -195,10 +278,16 @@ class CcrRelayService {
           logger.error('❌ Failed to check quota after 429 error:', err)
         })
 
-        await ccrAccountService.markAccountRateLimited(accountId)
+        await ccrAccountService.markAccountRateLimited(accountId, 'HTTP 429')
       } else if (response.status === 529) {
         logger.warn(`🚫 Overload error detected for CCR account ${accountId}`)
         await ccrAccountService.markAccountOverloaded(accountId)
+      } else if (response.status >= 400 && this._isRateLimitError(response.data)) {
+        // 🔍 通过错误消息检测到限流
+        logger.warn(
+          `🚫 Rate limit detected by error message for CCR account ${accountId} (status: ${response.status})`
+        )
+        await ccrAccountService.markAccountRateLimited(accountId, 'error message pattern match')
       } else if (response.status === 200 || response.status === 201) {
         // 如果请求成功，检查并移除错误状态
         const isRateLimited = await ccrAccountService.isAccountRateLimited(accountId)
@@ -397,44 +486,61 @@ class CcrRelayService {
               `❌ CCR API returned error status: ${response.status} | Account: ${account?.name || accountId}`
             )
 
-            if (response.status === 401) {
-              ccrAccountService.markAccountUnauthorized(accountId)
-            } else if (response.status === 429) {
-              ccrAccountService.markAccountRateLimited(accountId)
-              // 检查是否因为超过每日额度
-              ccrAccountService.checkQuotaUsage(accountId).catch((err) => {
-                logger.error('❌ Failed to check quota after 429 error:', err)
-              })
-            } else if (response.status === 529) {
-              ccrAccountService.markAccountOverloaded(accountId)
-            }
+            // 收集错误数据用于检测
+            let errorDataForCheck = ''
+            const errorChunks = []
 
-            // 设置错误响应的状态码和响应头
-            if (!responseStream.headersSent) {
-              const errorHeaders = {
-                'Content-Type': response.headers['content-type'] || 'application/json',
-                'Cache-Control': 'no-cache',
-                Connection: 'keep-alive'
-              }
-              // 避免 Transfer-Encoding 冲突，让 Express 自动处理
-              delete errorHeaders['Transfer-Encoding']
-              delete errorHeaders['Content-Length']
-              responseStream.writeHead(response.status, errorHeaders)
-            }
-
-            // 直接透传错误数据，不进行包装
             response.data.on('data', (chunk) => {
-              if (!responseStream.destroyed) {
-                responseStream.write(chunk)
-              }
+              errorChunks.push(chunk)
+              errorDataForCheck += chunk.toString()
             })
 
-            response.data.on('end', () => {
+            response.data.on('end', async () => {
+              // 检查错误状态
+              if (response.status === 401) {
+                await ccrAccountService.markAccountUnauthorized(accountId)
+              } else if (response.status === 429) {
+                await ccrAccountService.markAccountRateLimited(accountId, 'HTTP 429')
+                // 检查是否因为超过每日额度
+                ccrAccountService.checkQuotaUsage(accountId).catch((err) => {
+                  logger.error('❌ Failed to check quota after 429 error:', err)
+                })
+              } else if (response.status === 529) {
+                await ccrAccountService.markAccountOverloaded(accountId)
+              } else if (response.status >= 400 && this._isRateLimitError(errorDataForCheck)) {
+                // 🔍 通过错误消息检测到限流
+                logger.warn(
+                  `🚫 [Stream] Rate limit detected by error message for CCR account ${accountId} (status: ${response.status})`
+                )
+                await ccrAccountService.markAccountRateLimited(
+                  accountId,
+                  'error message pattern match'
+                )
+              }
+
+              // 设置错误响应的状态码和响应头
+              if (!responseStream.headersSent) {
+                const errorHeaders = {
+                  'Content-Type': response.headers['content-type'] || 'application/json',
+                  'Cache-Control': 'no-cache',
+                  Connection: 'keep-alive'
+                }
+                // 避免 Transfer-Encoding 冲突，让 Express 自动处理
+                delete errorHeaders['Transfer-Encoding']
+                delete errorHeaders['Content-Length']
+                responseStream.writeHead(response.status, errorHeaders)
+              }
+
+              // 发送错误数据
               if (!responseStream.destroyed) {
+                const fullErrorData = Buffer.concat(errorChunks)
+                responseStream.write(fullErrorData)
                 responseStream.end()
               }
-              resolve() // 不抛出异常，正常完成流处理
+
+              resolve()
             })
+
             return
           }
 

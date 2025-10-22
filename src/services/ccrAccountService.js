@@ -347,7 +347,7 @@ class CcrAccountService {
   }
 
   // 🚫 标记账户为限流状态
-  async markAccountRateLimited(accountId) {
+  async markAccountRateLimited(accountId, reason = '429 error') {
     try {
       const client = redis.getClientSafe()
       const account = await this.getAccount(accountId)
@@ -368,10 +368,29 @@ class CcrAccountService {
         status: 'rate_limited',
         rateLimitedAt: now,
         rateLimitStatus: 'active',
-        errorMessage: 'Rate limited by upstream service'
+        errorMessage: `Rate limited by upstream service (${reason})`
       })
 
-      logger.warn(`⏱️ Marked CCR account as rate limited: ${account.name} (${accountId})`)
+      // 发送Webhook通知
+      try {
+        const webhookNotifier = require('../utils/webhookNotifier')
+        const { getISOStringWithTimezone } = require('../utils/dateHelper')
+        await webhookNotifier.sendAccountAnomalyNotification({
+          accountId,
+          accountName: account.name || 'CCR Account',
+          platform: 'ccr',
+          status: 'error',
+          errorCode: 'CCR_RATE_LIMITED',
+          reason: `Account rate limited (${reason}) and has been disabled. ${account.rateLimitDuration ? `Will be automatically re-enabled after ${account.rateLimitDuration} minutes` : 'Manual intervention required to re-enable'}`,
+          timestamp: getISOStringWithTimezone(new Date())
+        })
+      } catch (webhookError) {
+        logger.error('Failed to send rate limit webhook notification:', webhookError)
+      }
+
+      logger.warn(
+        `⏱️ Marked CCR account as rate limited: ${account.name} (${accountId}), reason: ${reason}`
+      )
       return { success: true, rateLimitedAt: now }
     } catch (error) {
       logger.error(`❌ Failed to mark CCR account as rate limited: ${accountId}`, error)

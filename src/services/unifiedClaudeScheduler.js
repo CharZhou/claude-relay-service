@@ -995,19 +995,21 @@ class UnifiedClaudeScheduler {
     accountId,
     accountType,
     sessionHash = null,
-    rateLimitResetTimestamp = null
+    rateLimitResetTimestamp = null,
+    reason = '429 error'
   ) {
     try {
       if (accountType === 'claude-official') {
         await claudeAccountService.markAccountRateLimited(
           accountId,
           sessionHash,
-          rateLimitResetTimestamp
+          rateLimitResetTimestamp,
+          reason
         )
       } else if (accountType === 'claude-console') {
-        await claudeConsoleAccountService.markAccountRateLimited(accountId)
+        await claudeConsoleAccountService.markAccountRateLimited(accountId, reason)
       } else if (accountType === 'ccr') {
-        await ccrAccountService.markAccountRateLimited(accountId)
+        await ccrAccountService.markAccountRateLimited(accountId, reason)
       }
 
       // 删除会话映射

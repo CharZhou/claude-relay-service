@@ -76,9 +76,47 @@ class ClaudeRelayService {
       if (typeof body.message === 'string') {
         return body.message
       }
+      if (typeof body.detail === 'string') {
+        return body.detail
+      }
     }
 
     return ''
+  }
+
+  // 🔍 检测错误消息中是否包含限流相关内容
+  _isRateLimitError(responseData) {
+    try {
+      const errorMessage = this._extractErrorMessage(responseData)
+
+      if (!errorMessage) {
+        return false
+      }
+
+      // 转换为小写进行匹配
+      const lowerMessage = errorMessage.toLowerCase()
+
+      // 限流相关的关键词列表
+      const rateLimitPatterns = [
+        'rate limit',
+        'rate_limit',
+        'ratelimit',
+        'too many requests',
+        'request limit',
+        'quota exceeded',
+        'throttled',
+        'slow down',
+        '请求过于频繁',
+        '频率限制',
+        '您的积分不足'
+      ]
+
+      // 检查是否匹配任何限流关键词
+      return rateLimitPatterns.some((pattern) => lowerMessage.includes(pattern))
+    } catch (error) {
+      logger.debug('Error checking rate limit message:', error)
+      return false
+    }
   }
 
   // 🚫 检查是否为组织被禁用错误
@@ -246,6 +284,7 @@ class ClaudeRelayService {
       if (response.statusCode !== 200 && response.statusCode !== 201) {
         let isRateLimited = false
         let rateLimitResetTimestamp = null
+        let rateLimitReason = 'HTTP 429' // 默认原因
         let dedicatedRateLimitMessage = null
         const organizationDisabledError = this._isOrganizationDisabledError(
           response.statusCode,
@@ -352,27 +391,18 @@ class ClaudeRelayService {
               )
             }
           }
-        } else {
-          // 检查响应体中的错误信息
-          try {
-            const responseBody =
-              typeof response.body === 'string' ? JSON.parse(response.body) : response.body
-            if (
-              responseBody &&
-              responseBody.error &&
-              responseBody.error.message &&
-              responseBody.error.message.toLowerCase().includes("exceed your account's rate limit")
-            ) {
-              isRateLimited = true
-            }
-          } catch (e) {
-            // 如果解析失败，检查原始字符串
-            if (
-              response.body &&
-              response.body.toLowerCase().includes("exceed your account's rate limit")
-            ) {
-              isRateLimited = true
-            }
+        }
+        // 🔍 通过错误消息检测限流
+        else if (this._isRateLimitError(response.body)) {
+          logger.warn(
+            `🚫 Rate limit detected by error message for account ${accountId} (status: ${response.statusCode})`
+          )
+          isRateLimited = true
+          rateLimitReason = 'error message pattern match'
+          if (isDedicatedOfficialAccount) {
+            dedicatedRateLimitMessage = this._buildStandardRateLimitMessage(
+              rateLimitResetTimestamp || account?.rateLimitEndAt
+            )
           }
         }
 
@@ -383,14 +413,15 @@ class ClaudeRelayService {
             )
           }
           logger.warn(
-            `🚫 Rate limit detected for account ${accountId}, status: ${response.statusCode}`
+            `🚫 Rate limit detected for account ${accountId}, status: ${response.statusCode}, reason: ${rateLimitReason}`
           )
-          // 标记账号为限流状态并删除粘性会话映射，传递准确的重置时间戳
+          // 标记账号为限流状态并删除粘性会话映射，传递准确的重置时间戳和原因
           await unifiedClaudeScheduler.markAccountRateLimited(
             accountId,
             accountType,
             sessionHash,
-            rateLimitResetTimestamp
+            rateLimitResetTimestamp,
+            rateLimitReason
           )
 
           if (dedicatedRateLimitMessage) {
@@ -1390,9 +1421,12 @@ class ClaudeRelayService {
                 accountId,
                 accountType,
                 sessionHash,
-                rateLimitResetTimestamp
+                rateLimitResetTimestamp,
+                'HTTP 429'
               )
-              logger.warn(`🚫 [Stream] Rate limit detected for account ${accountId}, status 429`)
+              logger.warn(
+                `🚫 [Stream] Rate limit detected for account ${accountId}, status 429, reason: HTTP 429`
+              )
 
               if (isDedicatedOfficialAccount) {
                 const limitMessage = this._buildStandardRateLimitMessage(
@@ -1641,15 +1675,12 @@ class ClaudeRelayService {
                     }
                   }
 
-                  // 检查是否有限流错误
-                  if (
-                    data.type === 'error' &&
-                    data.error &&
-                    data.error.message &&
-                    data.error.message.toLowerCase().includes("exceed your account's rate limit")
-                  ) {
+                  // 🔍 检查是否有限流错误
+                  if (data.type === 'error' && this._isRateLimitError(data)) {
                     rateLimitDetected = true
-                    logger.warn(`🚫 Rate limit detected in stream for account ${accountId}`)
+                    logger.warn(
+                      `🚫 Rate limit detected by error message in stream for account ${accountId}`
+                    )
                   }
                 } catch (parseError) {
                   // 忽略JSON解析错误，继续处理
@@ -1791,6 +1822,9 @@ class ClaudeRelayService {
               ? res.headers['anthropic-ratelimit-unified-reset']
               : null
             const parsedResetTimestamp = resetHeader ? parseInt(resetHeader, 10) : NaN
+            // 判断限流原因：如果是429状态码则为HTTP 429，否则为错误消息检测
+            const rateLimitReason =
+              res.statusCode === 429 ? 'HTTP 429' : 'error message pattern match'
 
             if (isOpusModelRequest && !Number.isNaN(parsedResetTimestamp)) {
               await claudeAccountService.markAccountOpusRateLimited(accountId, parsedResetTimestamp)
@@ -1812,7 +1846,11 @@ class ClaudeRelayService {
                 accountId,
                 accountType,
                 sessionHash,
-                rateLimitResetTimestamp
+                rateLimitResetTimestamp,
+                rateLimitReason
+              )
+              logger.warn(
+                `🚫 [Stream] Rate limit marked for account ${accountId}, reason: ${rateLimitReason}`
               )
             }
           } else if (res.statusCode === 200) {
