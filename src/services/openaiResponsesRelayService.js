@@ -39,6 +39,175 @@ class OpenAIResponsesRelayService {
     this.defaultTimeout = config.requestTimeout || 600000
   }
 
+  // 提取错误消息文本
+  _extractErrorMessage(body) {
+    if (!body) {
+      return ''
+    }
+
+    if (typeof body === 'string') {
+      const trimmed = body.trim()
+      if (!trimmed) {
+        return ''
+      }
+      try {
+        const parsed = JSON.parse(trimmed)
+        return this._extractErrorMessage(parsed)
+      } catch (error) {
+        return trimmed
+      }
+    }
+
+    if (typeof body === 'object') {
+      if (typeof body.error === 'string') {
+        return body.error
+      }
+      if (body.error && typeof body.error === 'object') {
+        if (typeof body.error.message === 'string') {
+          return body.error.message
+        }
+        if (typeof body.error.error === 'string') {
+          return body.error.error
+        }
+        if (typeof body.error.details === 'string') {
+          return body.error.details
+        }
+      }
+      if (typeof body.message === 'string') {
+        return body.message
+      }
+      if (typeof body.detail === 'string') {
+        return body.detail
+      }
+    }
+
+    return ''
+  }
+
+  // 判断响应是否为限流错误
+  _isRateLimitError(statusCode, body) {
+    if (statusCode === 429) {
+      return true
+    }
+
+    if (!body) {
+      return false
+    }
+
+    const rateLimitPatterns = [
+      'rate limit',
+      'ratelimit',
+      'quota',
+      'insufficient_quota',
+      'exceeded your current quota',
+      'billing hard limit',
+      'overloaded',
+      'too many requests',
+      'request limit',
+      'slow down'
+    ]
+
+    const message = this._extractErrorMessage(body)
+    const messageMatched =
+      message && rateLimitPatterns.some((pattern) => message.toLowerCase().includes(pattern))
+
+    if (messageMatched) {
+      return true
+    }
+
+    if (typeof body === 'object' && body.error && typeof body.error === 'object') {
+      const candidateValues = [body.error.code, body.error.type, body.error.error]
+        .filter(Boolean)
+        .map((value) => String(value).toLowerCase())
+
+      if (
+        candidateValues.some((value) =>
+          rateLimitPatterns.some((pattern) => value.includes(pattern))
+        )
+      ) {
+        return true
+      }
+    }
+
+    return false
+  }
+
+  // 抽取限流恢复时间（秒）
+  _extractResetSeconds(errorData, headers = {}) {
+    const extractNumber = (value) => {
+      if (value === undefined || value === null || value === '') {
+        return null
+      }
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return value
+      }
+      const parsed = Number(value)
+      if (Number.isFinite(parsed)) {
+        return parsed
+      }
+      return null
+    }
+
+    let candidates = []
+
+    if (errorData && typeof errorData === 'object') {
+      const error = typeof errorData.error === 'object' ? errorData.error : errorData
+      candidates = candidates.concat([
+        extractNumber(error.resets_in_seconds),
+        extractNumber(error.resets_in),
+        extractNumber(error.retry_after_seconds),
+        extractNumber(error.retry_after)
+      ])
+    }
+
+    if (headers && typeof headers === 'object') {
+      const retryAfterHeader = headers['retry-after'] || headers['Retry-After']
+      if (retryAfterHeader) {
+        const headerSeconds = extractNumber(retryAfterHeader)
+        if (headerSeconds !== null) {
+          candidates.push(headerSeconds)
+        } else {
+          const date = Date.parse(retryAfterHeader)
+          if (!Number.isNaN(date)) {
+            const diffSeconds = Math.ceil((date - Date.now()) / 1000)
+            if (diffSeconds > 0) {
+              candidates.push(diffSeconds)
+            }
+          }
+        }
+      }
+    }
+
+    for (const candidate of candidates) {
+      if (candidate && Number.isFinite(candidate) && candidate > 0) {
+        return candidate
+      }
+    }
+
+    const fallbackSeconds = 600
+    logger.warn(
+      `⚠️ Unable to extract rate limit reset time, defaulting to ${fallbackSeconds} seconds (10 minutes)`
+    )
+    return fallbackSeconds
+  }
+
+  // 统一构建限流响应
+  _buildRateLimitResponse(message, resetsInSeconds = null) {
+    const response = {
+      error: {
+        message: message || 'Rate limit exceeded',
+        type: 'rate_limit_error',
+        code: 'rate_limit_exceeded'
+      }
+    }
+
+    if (resetsInSeconds && Number.isFinite(resetsInSeconds) && resetsInSeconds > 0) {
+      response.error.resets_in_seconds = resetsInSeconds
+    }
+
+    return response
+  }
+
   // 处理请求转发
   async handleRequest(req, res, account, apiKeyData) {
     let abortController = null
@@ -255,6 +424,39 @@ class OpenAIResponsesRelayService {
           return res.status(401).json(unauthorizedResponse)
         }
 
+        if (this._isRateLimitError(response.status, errorData)) {
+          const resetsInSeconds = this._extractResetSeconds(errorData, response.headers)
+          const errorMessage = this._extractErrorMessage(errorData)
+          logger.warn('⚠️ OpenAI-Responses rate limit detected from error payload', {
+            status: response.status,
+            accountId: account.id,
+            resetsInSeconds,
+            message: errorMessage
+          })
+
+          try {
+            await unifiedOpenAIScheduler.markAccountRateLimited(
+              account.id,
+              'openai-responses',
+              sessionHash,
+              resetsInSeconds
+            )
+          } catch (markError) {
+            logger.error(
+              '❌ Failed to mark OpenAI-Responses account rate limited after error detection:',
+              markError
+            )
+          }
+
+          const rateLimitedResponse = this._buildRateLimitResponse(errorMessage, resetsInSeconds)
+
+          // 清理监听器
+          req.removeListener('close', handleClientDisconnect)
+          res.removeListener('close', handleClientDisconnect)
+
+          return res.status(429).json(rateLimitedResponse)
+        }
+
         // 清理监听器
         req.removeListener('close', handleClientDisconnect)
         res.removeListener('close', handleClientDisconnect)
@@ -385,6 +587,34 @@ class OpenAIResponsesRelayService {
           }
 
           return res.status(401).json(unauthorizedResponse)
+        }
+
+        if (this._isRateLimitError(status, errorData)) {
+          const resetsInSeconds = this._extractResetSeconds(errorData, error.response.headers)
+          const errorMessage = this._extractErrorMessage(errorData)
+          logger.warn('⚠️ OpenAI-Responses rate limit detected in axios error response', {
+            status,
+            accountId: account.id,
+            resetsInSeconds,
+            message: errorMessage
+          })
+
+          try {
+            await unifiedOpenAIScheduler.markAccountRateLimited(
+              account.id,
+              'openai-responses',
+              sessionHash,
+              resetsInSeconds
+            )
+          } catch (markError) {
+            logger.error(
+              '❌ Failed to mark OpenAI-Responses account rate limited in axios error handler:',
+              markError
+            )
+          }
+
+          const rateLimitedResponse = this._buildRateLimitResponse(errorMessage, resetsInSeconds)
+          return res.status(429).json(rateLimitedResponse)
         }
 
         return res.status(status).json(errorData)
