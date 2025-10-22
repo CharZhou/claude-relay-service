@@ -288,7 +288,7 @@ class CcrRelayService {
         logger.warn(
           `🚫 Rate limit detected by error message for CCR account ${accountId} (status: ${response.status}), upstream message: ${upstreamErrorMessage}`
         )
-        await ccrAccountService.markAccountRateLimited(accountId, 'error message pattern match')
+        await ccrAccountService.markAccountRateLimited(accountId, upstreamErrorMessage)
       } else if (response.status === 200 || response.status === 201) {
         // 如果请求成功，检查并移除错误状态
         const isRateLimited = await ccrAccountService.isAccountRateLimited(accountId)
@@ -514,10 +514,7 @@ class CcrRelayService {
                 logger.warn(
                   `🚫 [Stream] Rate limit detected by error message for CCR account ${accountId} (status: ${response.status}), upstream message: ${upstreamErrorMessage}`
                 )
-                await ccrAccountService.markAccountRateLimited(
-                  accountId,
-                  'error message pattern match'
-                )
+                await ccrAccountService.markAccountRateLimited(accountId, upstreamErrorMessage)
               }
 
               // 设置错误响应的状态码和响应头

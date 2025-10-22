@@ -400,12 +400,10 @@ class ClaudeRelayService {
             `🚫 Rate limit detected by error message for account ${accountId} (status: ${response.statusCode}), upstream message: ${upstreamErrorMessage}`
           )
           isRateLimited = true
-          rateLimitReason = 'error message pattern match'
+          rateLimitReason = upstreamErrorMessage
           if (isDedicatedOfficialAccount) {
             // 构建包含上游错误信息的限流消息
-            const baseMessage = this._buildStandardRateLimitMessage(
-              rateLimitResetTimestamp || account?.rateLimitEndAt
-            )
+            const baseMessage = this._buildStandardRateLimitMessage(account?.rateLimitEndAt)
             dedicatedRateLimitMessage = upstreamErrorMessage
               ? `${baseMessage}\n上游错误详情: ${upstreamErrorMessage}`
               : baseMessage

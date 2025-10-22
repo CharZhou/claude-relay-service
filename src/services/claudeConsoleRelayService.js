@@ -329,10 +329,7 @@ class ClaudeConsoleRelayService {
         logger.warn(
           `🚫 Rate limit detected by error message for Claude Console account ${accountId} (status: ${response.status}), upstream message: ${upstreamErrorMessage}`
         )
-        await claudeConsoleAccountService.markAccountRateLimited(
-          accountId,
-          'error message pattern match'
-        )
+        await claudeConsoleAccountService.markAccountRateLimited(accountId, upstreamErrorMessage)
       } else if (response.status === 200 || response.status === 201) {
         // 如果请求成功，检查并移除错误状态
         const isRateLimited = await claudeConsoleAccountService.isAccountRateLimited(accountId)
@@ -607,7 +604,7 @@ class ClaudeConsoleRelayService {
                 )
                 await claudeConsoleAccountService.markAccountRateLimited(
                   accountId,
-                  'error message pattern match'
+                  upstreamErrorMessage
                 )
               }
 
