@@ -61,7 +61,10 @@ const config = {
       url: process.env.CLAUDE_TEAM_MEMORY_URL || '', // 远程 URL（第二优先级）
       refreshInterval: parseFloat(process.env.CLAUDE_TEAM_MEMORY_REFRESH_INTERVAL) || 0, // 刷新间隔（分钟），0 表示禁用
       useCacheControl: process.env.CLAUDE_TEAM_MEMORY_USE_CACHE !== 'false', // 默认启用
-      onlyForRealClaudeCode: process.env.CLAUDE_TEAM_MEMORY_ONLY_REAL_CC !== 'false' // 默认启用
+      onlyForRealClaudeCode: process.env.CLAUDE_TEAM_MEMORY_ONLY_REAL_CC !== 'false', // 默认启用
+      modelPrefixes: process.env.CLAUDE_TEAM_MEMORY_MODEL_PREFIXES
+        ? process.env.CLAUDE_TEAM_MEMORY_MODEL_PREFIXES.split(',').map((p) => p.trim())
+        : ['claude-sonnet'] // 默认应用于这些模型前缀
     }
   },
 
@@ -172,6 +175,20 @@ const config = {
     userSessionTimeout: parseInt(process.env.USER_SESSION_TIMEOUT) || 86400000, // 24小时
     maxApiKeysPerUser: parseInt(process.env.MAX_API_KEYS_PER_USER) || 1,
     allowUserDeleteApiKeys: process.env.ALLOW_USER_DELETE_API_KEYS === 'true' // 默认不允许用户删除自己的API Keys
+  },
+
+  // 🤖 OpenAI 服务配置
+  openai: {
+    // 🧠 团队 Memory 配置（支持 OpenAI、Azure OpenAI、OpenAI Responses 等格式）
+    teamMemory: {
+      enabled: process.env.OPENAI_TEAM_MEMORY_ENABLED === 'true',
+      content: process.env.OPENAI_TEAM_MEMORY_CONTENT || '', // 直接配置内容（最高优先级）
+      url: process.env.OPENAI_TEAM_MEMORY_URL || '', // 远程 URL（第二优先级）
+      refreshInterval: parseFloat(process.env.OPENAI_TEAM_MEMORY_REFRESH_INTERVAL) || 0, // 刷新间隔（分钟），0 表示禁用
+      modelPrefixes: process.env.OPENAI_TEAM_MEMORY_MODEL_PREFIXES
+        ? process.env.OPENAI_TEAM_MEMORY_MODEL_PREFIXES.split(',').map((p) => p.trim())
+        : ['gpt-', 'o1-', 'o3-'] // 默认应用于这些模型前缀
+    }
   },
 
   // 📢 Webhook通知配置

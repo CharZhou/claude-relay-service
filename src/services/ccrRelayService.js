@@ -1,6 +1,6 @@
 const axios = require('axios')
 const ccrAccountService = require('./ccrAccountService')
-const claudeMemoryService = require('./claudeMemoryService')
+const teamMemoryService = require('./teamMemoryService')
 const logger = require('../utils/logger')
 const config = require('../../config/config')
 const { parseVendorPrefixedModel } = require('../utils/modelHelper')
@@ -140,7 +140,7 @@ class CcrRelayService {
       }
 
       // 🧠 注入团队 Memory（在修改请求体之前）
-      claudeMemoryService.injectTeamMemory(requestBody)
+      teamMemoryService.injectToClaudeFormat(requestBody)
 
       // 创建修改后的请求体，使用去前缀后的模型名
       const modifiedRequestBody = {
@@ -373,7 +373,7 @@ class CcrRelayService {
       }
 
       // 🧠 注入团队 Memory（在修改请求体之前）
-      claudeMemoryService.injectTeamMemory(requestBody)
+      teamMemoryService.injectToClaudeFormat(requestBody)
 
       // 创建修改后的请求体，使用去前缀后的模型名
       const modifiedRequestBody = {

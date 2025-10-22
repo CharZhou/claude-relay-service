@@ -7,8 +7,6 @@
  * 3. 测试各种错误消息格式
  */
 
-const path = require('path')
-
 // 测试用的错误消息模拟数据
 const testCases = [
   {

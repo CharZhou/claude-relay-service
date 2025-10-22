@@ -13,7 +13,7 @@ const redis = require('../models/redis')
 const ClaudeCodeValidator = require('../validators/clients/claudeCodeValidator')
 const { formatDateWithTimezone } = require('../utils/dateHelper')
 const runtimeAddon = require('../utils/runtimeAddon')
-const claudeMemoryService = require('./claudeMemoryService')
+const teamMemoryService = require('./teamMemoryService')
 
 const RUNTIME_EVENT_FMT_CLAUDE_REQ = 'fmtClaudeReq'
 
@@ -605,7 +605,7 @@ class ClaudeRelayService {
     }
 
     // 🧠 注入团队 Memory（在 Claude Code prompt 之后）
-    claudeMemoryService.injectTeamMemory(processedBody, isRealClaudeCode)
+    teamMemoryService.injectToClaudeFormat(processedBody, isRealClaudeCode)
 
     this._enforceCacheControlLimit(processedBody)
 

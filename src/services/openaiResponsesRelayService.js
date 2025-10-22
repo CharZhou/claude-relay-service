@@ -6,6 +6,7 @@ const apiKeyService = require('./apiKeyService')
 const unifiedOpenAIScheduler = require('./unifiedOpenAIScheduler')
 const config = require('../../config/config')
 const crypto = require('crypto')
+const teamMemoryService = require('./teamMemoryService')
 
 // 抽取缓存写入 token，兼容多种字段命名
 function extractCacheCreationTokens(usageData) {
@@ -53,6 +54,9 @@ class OpenAIResponsesRelayService {
       if (!fullAccount) {
         throw new Error('Account not found')
       }
+
+      // 🧠 注入团队 Memory（在发送请求之前）
+      teamMemoryService.injectToOpenAIResponsesFormat(req.body)
 
       // 创建 AbortController 用于取消请求
       abortController = new AbortController()

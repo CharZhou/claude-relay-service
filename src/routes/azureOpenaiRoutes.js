@@ -6,6 +6,7 @@ const azureOpenaiAccountService = require('../services/azureOpenaiAccountService
 const azureOpenaiRelayService = require('../services/azureOpenaiRelayService')
 const apiKeyService = require('../services/apiKeyService')
 const crypto = require('crypto')
+const teamMemoryService = require('../services/teamMemoryService')
 
 // 支持的模型列表 - 基于真实的 Azure OpenAI 模型
 const ALLOWED_MODELS = {
@@ -172,6 +173,9 @@ router.post('/chat/completions', authenticateApiKey, async (req, res) => {
       account = await azureOpenaiAccountService.selectAvailableAccount(sessionId)
     }
 
+    // 🧠 注入团队 Memory（在发送请求之前）
+    // teamMemoryService.injectToOpenAIResponsesFormat(req.body)
+
     // 发送请求到 Azure OpenAI
     const response = await azureOpenaiRelayService.handleAzureOpenAIRequest({
       account,
@@ -265,6 +269,9 @@ router.post('/responses', authenticateApiKey, async (req, res) => {
       account = await azureOpenaiAccountService.selectAvailableAccount(sessionId)
     }
 
+    // 🧠 注入团队 Memory（在发送请求之前）
+    teamMemoryService.injectToOpenAIResponsesFormat(req.body)
+
     // 发送请求到 Azure OpenAI
     const response = await azureOpenaiRelayService.handleAzureOpenAIRequest({
       account,
@@ -356,6 +363,9 @@ router.post('/embeddings', authenticateApiKey, async (req, res) => {
     if (!account || account.isActive !== 'true') {
       account = await azureOpenaiAccountService.selectAvailableAccount(sessionId)
     }
+
+    // 🧠 注入团队 Memory（在发送请求之前）
+    // teamMemoryService.injectToOpenAIResponsesFormat(req.body)
 
     // 发送请求到 Azure OpenAI
     const response = await azureOpenaiRelayService.handleAzureOpenAIRequest({
