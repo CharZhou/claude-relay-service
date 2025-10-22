@@ -394,15 +394,21 @@ class ClaudeRelayService {
         }
         // 🔍 通过错误消息检测限流
         else if (this._isRateLimitError(response.body)) {
+          // 提取上游的实际错误消息
+          const upstreamErrorMessage = this._extractErrorMessage(response.body)
           logger.warn(
-            `🚫 Rate limit detected by error message for account ${accountId} (status: ${response.statusCode})`
+            `🚫 Rate limit detected by error message for account ${accountId} (status: ${response.statusCode}), upstream message: ${upstreamErrorMessage}`
           )
           isRateLimited = true
           rateLimitReason = 'error message pattern match'
           if (isDedicatedOfficialAccount) {
-            dedicatedRateLimitMessage = this._buildStandardRateLimitMessage(
+            // 构建包含上游错误信息的限流消息
+            const baseMessage = this._buildStandardRateLimitMessage(
               rateLimitResetTimestamp || account?.rateLimitEndAt
             )
+            dedicatedRateLimitMessage = upstreamErrorMessage
+              ? `${baseMessage}\n上游错误详情: ${upstreamErrorMessage}`
+              : baseMessage
           }
         }
 
@@ -1567,6 +1573,7 @@ class ClaudeRelayService {
         const allUsageData = [] // 收集所有的usage事件
         let currentUsageData = {} // 当前正在收集的usage数据
         let rateLimitDetected = false // 限流检测标志
+        let upstreamRateLimitMessage = null // 上游速率限制错误消息
 
         // 监听数据块，解析SSE并寻找usage信息
         res.on('data', (chunk) => {
@@ -1678,8 +1685,10 @@ class ClaudeRelayService {
                   // 🔍 检查是否有限流错误
                   if (data.type === 'error' && this._isRateLimitError(data)) {
                     rateLimitDetected = true
+                    // 提取上游错误消息
+                    upstreamRateLimitMessage = this._extractErrorMessage(data)
                     logger.warn(
-                      `🚫 Rate limit detected by error message in stream for account ${accountId}`
+                      `🚫 Rate limit detected by error message in stream for account ${accountId}, upstream message: ${upstreamRateLimitMessage}`
                     )
                   }
                 } catch (parseError) {
@@ -1849,9 +1858,12 @@ class ClaudeRelayService {
                 rateLimitResetTimestamp,
                 rateLimitReason
               )
-              logger.warn(
-                `🚫 [Stream] Rate limit marked for account ${accountId}, reason: ${rateLimitReason}`
-              )
+
+              // 记录详细的错误信息
+              const logMessage = upstreamRateLimitMessage
+                ? `🚫 [Stream] Rate limit marked for account ${accountId}, reason: ${rateLimitReason}, upstream message: ${upstreamRateLimitMessage}`
+                : `🚫 [Stream] Rate limit marked for account ${accountId}, reason: ${rateLimitReason}`
+              logger.warn(logMessage)
             }
           } else if (res.statusCode === 200) {
             // 请求成功，清除401和500错误计数

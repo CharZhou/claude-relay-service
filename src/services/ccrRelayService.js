@@ -284,8 +284,9 @@ class CcrRelayService {
         await ccrAccountService.markAccountOverloaded(accountId)
       } else if (response.status >= 400 && this._isRateLimitError(response.data)) {
         // 🔍 通过错误消息检测到限流
+        const upstreamErrorMessage = this._extractErrorMessage(response.data)
         logger.warn(
-          `🚫 Rate limit detected by error message for CCR account ${accountId} (status: ${response.status})`
+          `🚫 Rate limit detected by error message for CCR account ${accountId} (status: ${response.status}), upstream message: ${upstreamErrorMessage}`
         )
         await ccrAccountService.markAccountRateLimited(accountId, 'error message pattern match')
       } else if (response.status === 200 || response.status === 201) {
@@ -509,8 +510,9 @@ class CcrRelayService {
                 await ccrAccountService.markAccountOverloaded(accountId)
               } else if (response.status >= 400 && this._isRateLimitError(errorDataForCheck)) {
                 // 🔍 通过错误消息检测到限流
+                const upstreamErrorMessage = this._extractErrorMessage(errorDataForCheck)
                 logger.warn(
-                  `🚫 [Stream] Rate limit detected by error message for CCR account ${accountId} (status: ${response.status})`
+                  `🚫 [Stream] Rate limit detected by error message for CCR account ${accountId} (status: ${response.status}), upstream message: ${upstreamErrorMessage}`
                 )
                 await ccrAccountService.markAccountRateLimited(
                   accountId,

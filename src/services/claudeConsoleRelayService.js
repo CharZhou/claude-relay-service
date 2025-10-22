@@ -325,8 +325,9 @@ class ClaudeConsoleRelayService {
         await claudeConsoleAccountService.markAccountOverloaded(accountId)
       } else if (response.status >= 400 && this._isRateLimitError(response.data)) {
         // 🔍 通过错误消息检测到限流
+        const upstreamErrorMessage = this._extractErrorMessage(response.data)
         logger.warn(
-          `🚫 Rate limit detected by error message for Claude Console account ${accountId} (status: ${response.status})`
+          `🚫 Rate limit detected by error message for Claude Console account ${accountId} (status: ${response.status}), upstream message: ${upstreamErrorMessage}`
         )
         await claudeConsoleAccountService.markAccountRateLimited(
           accountId,
@@ -600,8 +601,9 @@ class ClaudeConsoleRelayService {
                 await claudeConsoleAccountService.markAccountOverloaded(accountId)
               } else if (response.status >= 400 && this._isRateLimitError(errorDataForCheck)) {
                 // 🔍 通过错误消息检测到限流
+                const upstreamErrorMessage = this._extractErrorMessage(errorDataForCheck)
                 logger.warn(
-                  `🚫 [Stream] Rate limit detected by error message for Claude Console account ${accountId} (status: ${response.status})`
+                  `🚫 [Stream] Rate limit detected by error message for Claude Console account ${accountId} (status: ${response.status}), upstream message: ${upstreamErrorMessage}`
                 )
                 await claudeConsoleAccountService.markAccountRateLimited(
                   accountId,
