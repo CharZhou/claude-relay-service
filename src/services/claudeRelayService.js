@@ -611,6 +611,31 @@ class ClaudeRelayService {
       this._replaceClientId(processedBody, account.unifiedClientId)
     }
 
+    // 验证并记录 Extended Thinking 参数
+    if (processedBody.thinking && typeof processedBody.thinking === 'object') {
+      const thinkingType = processedBody.thinking.type || 'enabled'
+      const budgetTokens = processedBody.thinking.budget_tokens
+
+      // 验证thinking类型
+      if (!['enabled', 'disabled'].includes(thinkingType)) {
+        logger.warn(`⚠️ Invalid thinking.type: ${thinkingType}, using 'enabled' as default`)
+        processedBody.thinking.type = 'enabled'
+      }
+
+      logger.info(
+        `🧠 Extended Thinking: ${thinkingType}${budgetTokens ? `, budget: ${budgetTokens} tokens` : ''}`
+      )
+
+      // 验证budget_tokens（如果提供）
+      if (budgetTokens !== undefined) {
+        const budget = parseInt(budgetTokens, 10)
+        if (Number.isNaN(budget) || budget <= 0) {
+          logger.warn(`⚠️ Invalid thinking.budget_tokens: ${budgetTokens}, removing from request`)
+          delete processedBody.thinking.budget_tokens
+        }
+      }
+    }
+
     return processedBody
   }
 

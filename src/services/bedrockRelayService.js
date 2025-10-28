@@ -334,6 +334,20 @@ class BedrockRelayService {
       bedrockPayload.tool_choice = requestBody.tool_choice
     }
 
+    // Metadata支持
+    if (requestBody.metadata) {
+      bedrockPayload.metadata = requestBody.metadata
+      logger.debug(`📋 Added metadata to Bedrock request`)
+    }
+
+    // Extended Thinking支持
+    if (requestBody.thinking) {
+      bedrockPayload.thinking = requestBody.thinking
+      logger.info(
+        `🧠 Extended Thinking enabled for Bedrock: ${requestBody.thinking.type || 'enabled'}`
+      )
+    }
+
     return bedrockPayload
   }
 
