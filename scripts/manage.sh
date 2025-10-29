@@ -20,6 +20,11 @@ DEFAULT_REDIS_PORT="6379"
 DEFAULT_REDIS_PASSWORD=""
 DEFAULT_APP_PORT="3000"
 
+# GitHub 仓库配置 - 可通过环境变量 REPO_URL 覆盖
+# Fork 用户应该修改这里或设置 REPO_URL 环境变量为自己的仓库
+DEFAULT_REPO_URL="https://github.com/Wei-Shaw/claude-relay-service.git"
+REPO_URL="${REPO_URL:-$DEFAULT_REPO_URL}"
+
 # 全局变量
 INSTALL_DIR=""
 APP_DIR=""
@@ -409,7 +414,7 @@ install_service() {
         rm -rf "$APP_DIR"
     fi
     
-    if ! git clone https://github.com/Wei-Shaw/claude-relay-service.git "$APP_DIR"; then
+    if ! git clone "$REPO_URL" "$APP_DIR"; then
         print_error "克隆项目失败"
         return 1
     fi
@@ -475,11 +480,11 @@ EOF
         
         # 使用 sparse-checkout 来只获取需要的文件
         git clone --depth 1 --branch web-dist --single-branch \
-            https://github.com/Wei-Shaw/claude-relay-service.git \
+            "$REPO_URL" \
             "$TEMP_CLONE_DIR" 2>/dev/null || {
-            # 如果 HTTPS 失败，尝试使用当前仓库的 remote URL
-            REPO_URL=$(git config --get remote.origin.url)
-            git clone --depth 1 --branch web-dist --single-branch "$REPO_URL" "$TEMP_CLONE_DIR"
+            # 如果失败，尝试使用当前仓库的 remote URL
+            LOCAL_REPO_URL=$(git config --get remote.origin.url)
+            git clone --depth 1 --branch web-dist --single-branch "$LOCAL_REPO_URL" "$TEMP_CLONE_DIR"
         }
         
         # 复制文件到目标目录（排除 .git 和 README.md）
@@ -678,14 +683,14 @@ update_service() {
             print_info "尝试下载前端文件 (第 $attempt 次)..."
             
             if git clone --depth 1 --branch web-dist --single-branch \
-                https://github.com/Wei-Shaw/claude-relay-service.git \
+                "$REPO_URL" \
                 "$TEMP_CLONE_DIR" 2>/dev/null; then
                 clone_success=true
                 break
             fi
-            
-            # 如果 HTTPS 失败，尝试使用当前仓库的 remote URL
-            REPO_URL=$(git config --get remote.origin.url)
+
+            # 如果失败，尝试使用当前仓库的 remote URL
+            LOCAL_REPO_URL=$(git config --get remote.origin.url)
             if git clone --depth 1 --branch web-dist --single-branch "$REPO_URL" "$TEMP_CLONE_DIR" 2>/dev/null; then
                 clone_success=true
                 break
@@ -1212,7 +1217,7 @@ switch_branch() {
             
             # 下载前端文件
             if git clone --depth 1 --branch "$web_branch" --single-branch \
-                https://github.com/Wei-Shaw/claude-relay-service.git \
+                "$REPO_URL" \
                 "$TEMP_CLONE_DIR" 2>/dev/null; then
                 
                 # 复制文件到目标目录

@@ -1,5 +1,7 @@
 # Claude Relay Service
 
+> **📢 Fork说明**: 这是一个从 [Wei-Shaw/claude-relay-service](https://github.com/Wei-Shaw/claude-relay-service) fork 的版本,已配置为自动适配 fork 仓库。所有构建和发布将自动使用你的 GitHub 账户。详见 [Fork配置指南](.github/FORK_SETUP_GUIDE.md)。
+
 <div align="center">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)

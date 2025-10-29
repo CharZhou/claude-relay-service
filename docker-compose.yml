@@ -7,6 +7,14 @@ services:
   # 🚀 Claude Relay Service
   claude-relay:
     build: .
+    # Fork 用户: 修改为你的 Docker Hub 用户名或使用 GHCR
+    # image: <your-dockerhub-username>/claude-relay-service:latest
+    # 或使用 GitHub Container Registry:
+    # image: ghcr.io/<your-github-username>/claude-relay-service:latest
+    # Fork 用户: 修改为你的 Docker Hub 用户名或使用 GHCR
+    # image: <your-dockerhub-username>/claude-relay-service:latest
+    # 或使用 GitHub Container Registry:
+    # image: ghcr.io/<your-github-username>/claude-relay-service:latest
     image: weishaw/claude-relay-service:latest
     restart: unless-stopped
     ports:
