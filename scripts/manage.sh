@@ -20,10 +20,31 @@ DEFAULT_REDIS_PORT="6379"
 DEFAULT_REDIS_PASSWORD=""
 DEFAULT_APP_PORT="3000"
 
-# GitHub 仓库配置 - 可通过环境变量 REPO_URL 覆盖
-# Fork 用户应该修改这里或设置 REPO_URL 环境变量为自己的仓库
-DEFAULT_REPO_URL="https://github.com/wayfind/claude-relay-service.git"
-REPO_URL="${REPO_URL:-$DEFAULT_REPO_URL}"
+# GitHub 仓库配置 - 自动从当前 Git 仓库检测或通过环境变量 REPO_URL 覆盖
+# 检测逻辑: REPO_URL 环境变量 > 当前 Git remote > Wei-Shaw 原始仓库(fallback)
+detect_repo_url() {
+    if [ -n "$REPO_URL" ]; then
+        echo "$REPO_URL"
+        return
+    fi
+
+    # 尝试从当前脚本所在的仓库获取 remote URL
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local repo_root="$(cd "$script_dir/.." && pwd)"
+
+    if [ -d "$repo_root/.git" ]; then
+        local remote_url=$(cd "$repo_root" && git config --get remote.origin.url 2>/dev/null)
+        if [ -n "$remote_url" ]; then
+            echo "$remote_url"
+            return
+        fi
+    fi
+
+    # Fallback 到原始仓库
+    echo "https://github.com/Wei-Shaw/claude-relay-service.git"
+}
+
+REPO_URL=$(detect_repo_url)
 
 # 全局变量
 INSTALL_DIR=""

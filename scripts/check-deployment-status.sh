@@ -23,13 +23,35 @@ echo -e "${BLUE}  Claude Relay Service 部署状态检查${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
+# 自动检测 GitHub 用户名和 Docker 用户名
+# 优先级: 环境变量 > 从 Git remote 检测
+detect_github_user() {
+    if [ -n "$GITHUB_USER" ]; then
+        echo "$GITHUB_USER"
+        return
+    fi
+
+    # 从 Git remote URL 提取用户名
+    if [ -d ".git" ]; then
+        local remote_url=$(git config --get remote.origin.url 2>/dev/null)
+        if [[ "$remote_url" =~ github\.com[:/]([^/]+)/claude-relay-service ]]; then
+            echo "${BASH_REMATCH[1]}"
+            return
+        fi
+    fi
+
+    echo ""
+}
+
 # 检查 1: GitHub Actions 状态
-# Fork 用户配置: 设置环境变量覆盖默认值
-# export GITHUB_USER="your-github-username"
-# export DOCKER_USER="your-dockerhub-username"
 echo -e "${YELLOW}${INFO} 检查 GitHub Actions 状态...${NC}"
-GITHUB_USER="${GITHUB_USER:-wayfind}"
-DOCKER_USER="${DOCKER_USER:-weishaw}"
+GITHUB_USER=$(detect_github_user)
+DOCKER_USER="${DOCKER_USER:-$GITHUB_USER}"
+
+if [ -z "$GITHUB_USER" ]; then
+    echo -e "${RED}${FAIL} 无法检测 GitHub 用户名。请设置 GITHUB_USER 环境变量。${NC}"
+    exit 1
+fi
 echo -e "${INFO} 访问: ${BLUE}https://github.com/${GITHUB_USER}/claude-relay-service/actions${NC}"
 echo ""
 
