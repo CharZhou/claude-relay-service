@@ -227,6 +227,9 @@ jobs:
       if: steps.check.outputs.needs_bump == 'true'
       id: changelog
       run: |
+        # 动态替换 cliff.toml 中的仓库链接为当前仓库
+        sed -i "s|Wei-Shaw/claude-relay-service|${{ github.repository }}|g" .github/cliff.toml
+
         # 获取上一个tag以来的更新日志
         LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
         if [ -n "$LATEST_TAG" ]; then
@@ -252,7 +255,8 @@ jobs:
       run: |
         DOCKER_USERNAME="${{ secrets.DOCKERHUB_USERNAME }}"
         if [ -z "$DOCKER_USERNAME" ]; then
-          DOCKER_USERNAME="weishaw"
+          # 如果没有配置 DOCKERHUB_USERNAME，使用当前仓库拥有者的用户名
+          DOCKER_USERNAME="${{ github.repository_owner }}"
         fi
 
         DOCKER_IMAGE=$(echo "${DOCKER_USERNAME}/claude-relay-service" | tr '[:upper:]' '[:lower:]')
