@@ -227,8 +227,8 @@ jobs:
       if: steps.check.outputs.needs_bump == 'true'
       id: changelog
       run: |
-        # 动态替换 cliff.toml 中的仓库链接为当前仓库
-        sed -i "s|Wei-Shaw/claude-relay-service|${{ github.repository }}|g" .github/cliff.toml
+        # 动态替换 cliff.toml 中的仓库占位符为当前仓库
+        sed -i "s|REPOSITORY_PLACEHOLDER|${{ github.repository }}|g" .github/cliff.toml
 
         # 获取上一个tag以来的更新日志
         LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
