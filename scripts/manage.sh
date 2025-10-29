@@ -22,7 +22,7 @@ DEFAULT_APP_PORT="3000"
 
 # GitHub 仓库配置 - 可通过环境变量 REPO_URL 覆盖
 # Fork 用户应该修改这里或设置 REPO_URL 环境变量为自己的仓库
-DEFAULT_REPO_URL="https://github.com/Wei-Shaw/claude-relay-service.git"
+DEFAULT_REPO_URL="https://github.com/wayfind/claude-relay-service.git"
 REPO_URL="${REPO_URL:-$DEFAULT_REPO_URL}"
 
 # 全局变量
