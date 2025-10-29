@@ -397,28 +397,36 @@ docker-compose down
 docker-compose up -d
 ```
 
-### 方法 3: 修改 `crs update` 命令（高级）
+### 方法 3: 使用 `crs update` 命令 ✨ **推荐**
 
-如果你想让 `crs update` 命令自动从你的 fork 更新，需要修改 `crs` 脚本：
+**⚠️ 重要**: 完成迁移步骤 2 (切换 Git remote) 后,`crs update` **已经会从你的 fork 更新**!
 
-找到 `crs` 命令的安装位置：
 ```bash
-which crs
-# 通常在: /usr/local/bin/crs
+# ✅ 迁移完成后,直接使用即可:
+crs update
 ```
 
-编辑脚本，修改仓库地址：
+**工作原理**:
+- `crs` 命令实际上是软链接到 `~/claude-relay-service/app/scripts/manage.sh`
+- `crs update` 内部使用 `git fetch origin` 拉取更新
+- 因为你在步骤 2 已经修改了 `origin` 指向你的 fork
+- 所以 `crs update` 自动从你的 fork 仓库获取更新 🎉
+
+**验证配置**:
 ```bash
-# 找到类似这样的行:
-REPO_URL="https://github.com/Wei-Shaw/claude-relay-service.git"
+# 进入 app 目录查看 remote 配置
+cd ~/claude-relay-service/app
+git remote -v
 
-# 修改为:
-REPO_URL="https://github.com/wayfind/claude-relay-service.git"
+# 应该显示:
+# origin  https://github.com/wayfind/claude-relay-service.git (fetch)
+# origin  https://github.com/wayfind/claude-relay-service.git (push)
+```
 
-# 或修改镜像地址:
-DOCKER_IMAGE="weishaw/claude-relay-service"
-# 改为:
-DOCKER_IMAGE="ghcr.io/wayfind/claude-relay-service"
+**如果 remote 还是原仓库,需要重新执行步骤 2**:
+```bash
+cd ~/claude-relay-service/app
+git remote set-url origin https://github.com/wayfind/claude-relay-service.git
 ```
 
 ---
