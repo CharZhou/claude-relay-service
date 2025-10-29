@@ -894,6 +894,204 @@ proxy_request_buffering off;
 
 ---
 
+## 🔒 HTTPS 配置
+
+本服务支持两种 HTTPS 部署方式，可根据实际需求选择：
+
+### 方式一：反向代理（推荐生产环境）
+
+使用 Caddy 或 Nginx 作为反向代理，自动管理 SSL 证书：
+
+#### Caddy 配置（推荐，自动 HTTPS）
+
+```bash
+# 1. 安装 Caddy
+# Ubuntu/Debian:
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update
+sudo apt install caddy
+
+# 2. 创建 Caddyfile
+sudo nano /etc/caddy/Caddyfile
+
+# 3. 添加以下配置（自动 HTTPS）
+your-domain.com {
+    reverse_proxy localhost:3000
+
+    # 支持 SSE 流式传输
+    @sse {
+        header Accept text/event-stream
+    }
+    reverse_proxy @sse localhost:3000 {
+        flush_interval -1
+    }
+}
+
+# 4. 重启 Caddy
+sudo systemctl restart caddy
+```
+
+#### Nginx 配置
+
+```nginx
+server {
+    listen 80;
+    server_name your-domain.com;
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name your-domain.com;
+
+    # SSL 证书配置（Let's Encrypt）
+    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
+
+    # SSL 安全配置
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+
+        # SSE 流式传输支持
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+        proxy_connect_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+}
+```
+
+### 方式二：独立 HTTPS 服务器（开发/测试环境）
+
+直接在服务中启用内置 HTTPS 服务器：
+
+#### 1. 生成自签名证书（开发用）
+
+```bash
+# 使用 Bash 脚本（Linux/macOS）
+bash scripts/generate-self-signed-cert.sh
+
+# 或使用 Node.js 脚本（跨平台）
+node scripts/generate-self-signed-cert.js
+
+# 使用 CRS 工具链（推荐）
+crs gen-cert
+```
+
+证书会自动生成到 `certs/` 目录：
+- `certs/cert.pem` - SSL 证书
+- `certs/key.pem` - 私钥
+
+#### 2. 配置环境变量
+
+编辑 `.env` 文件，支持三种运行模式：
+
+**模式 1：仅 HTTP（默认）**
+```bash
+HTTP_ENABLED=true
+HTTPS_ENABLED=false
+PORT=3000
+```
+
+**模式 2：仅 HTTPS（推荐生产环境）**
+```bash
+HTTP_ENABLED=false
+HTTPS_ENABLED=true
+HTTPS_PORT=3443
+HTTPS_CERT_PATH=/path/to/certs/cert.pem
+HTTPS_KEY_PATH=/path/to/certs/key.pem
+```
+
+**模式 3：HTTP + HTTPS 同时运行（开发/测试）**
+```bash
+HTTP_ENABLED=true
+HTTPS_ENABLED=true
+PORT=3000
+HTTPS_PORT=3443
+HTTPS_CERT_PATH=/path/to/certs/cert.pem
+HTTPS_KEY_PATH=/path/to/certs/key.pem
+```
+
+#### 3. 启动服务
+
+```bash
+npm start
+```
+
+根据配置，服务将监听：
+- **模式 1（仅 HTTP）**: `http://localhost:3000`
+- **模式 2（仅 HTTPS）**: `https://localhost:3443`
+- **模式 3（双协议）**: `http://localhost:3000` 和 `https://localhost:3443`
+
+#### 4. Docker 部署 HTTPS
+
+```bash
+# 1. 生成证书
+bash scripts/generate-self-signed-cert.sh
+
+# 2. 更新 .env 或 docker-compose.yml
+HTTPS_ENABLED=true
+HTTPS_PORT=3443
+HTTPS_CERT_PATH=/app/certs/cert.pem
+HTTPS_KEY_PATH=/app/certs/key.pem
+
+# 3. 启动容器（证书已自动挂载）
+docker-compose up -d
+```
+
+访问：`https://your-server:3443`
+
+### 生产环境 SSL 证书获取
+
+#### 使用 Let's Encrypt（免费）
+
+```bash
+# 1. 安装 Certbot
+sudo apt install certbot python3-certbot-nginx
+
+# 2. 获取证书
+sudo certbot --nginx -d your-domain.com
+
+# 3. 自动续期
+sudo certbot renew --dry-run
+```
+
+#### 商业 SSL 证书
+
+如果使用商业 CA 证书：
+
+```bash
+# 配置环境变量指向证书路径
+HTTPS_ENABLED=true
+HTTPS_CERT_PATH=/path/to/commercial/cert.pem
+HTTPS_KEY_PATH=/path/to/commercial/key.pem
+```
+
+### 安全提示
+
+- **自签名证书**：仅用于开发/测试，浏览器会显示警告（正常现象）
+- **生产环境**：强烈推荐使用反向代理 + Let's Encrypt
+- **证书权限**：私钥文件应设置 `600` 权限
+- **证书续期**：Let's Encrypt 证书 90 天有效，需配置自动续期
+- **备份证书**：定期备份证书文件，避免丢失
+- **不要提交私钥**：`certs/` 目录已在 `.gitignore` 中
+
+---
+
 ## 💡 使用建议
 
 ### 账户管理

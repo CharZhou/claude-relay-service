@@ -4,10 +4,25 @@ require('dotenv').config()
 const config = {
   // 🌐 服务器配置
   server: {
+    // HTTP 配置
+    httpEnabled: process.env.HTTP_ENABLED !== 'false', // 默认启用 HTTP（向后兼容）
     port: parseInt(process.env.PORT) || 3000,
     host: process.env.HOST || '0.0.0.0',
     nodeEnv: process.env.NODE_ENV || 'development',
-    trustProxy: process.env.TRUST_PROXY === 'true'
+    trustProxy: process.env.TRUST_PROXY === 'true',
+
+    // 🔒 HTTPS 配置 (可选 - 独立 HTTPS 服务器)
+    // 注意：生产环境推荐使用反向代理（Nginx/Caddy）而非独立 HTTPS
+    // 支持的组合：
+    // 1. HTTP_ENABLED=true, HTTPS_ENABLED=false  - 仅 HTTP（默认）
+    // 2. HTTP_ENABLED=false, HTTPS_ENABLED=true  - 仅 HTTPS
+    // 3. HTTP_ENABLED=true, HTTPS_ENABLED=true   - HTTP + HTTPS 同时运行
+    https: {
+      enabled: process.env.HTTPS_ENABLED === 'true',
+      port: parseInt(process.env.HTTPS_PORT) || 3443,
+      certPath: process.env.HTTPS_CERT_PATH || '',
+      keyPath: process.env.HTTPS_KEY_PATH || ''
+    }
   },
 
   // 🔐 安全配置

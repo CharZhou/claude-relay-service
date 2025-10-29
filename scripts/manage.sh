@@ -1407,6 +1407,7 @@ show_help() {
     echo "  status         - 查看状态"
     echo "  switch-branch  - 切换分支"
     echo "  update-pricing - 更新模型价格数据"
+    echo "  gen-cert       - 生成 HTTPS 自签名证书（开发用）"
     echo "  symlink        - 创建 crs 快捷命令"
     echo "  help           - 显示帮助"
     echo ""
@@ -1606,10 +1607,57 @@ handle_menu_choice() {
 }
 
 # 创建软链接
+# 生成 HTTPS 自签名证书
+generate_ssl_cert() {
+    print_info "生成 HTTPS 自签名证书..."
+
+    # 确定证书生成脚本路径
+    local cert_script=""
+    if [ -n "$APP_DIR" ] && [ -f "$APP_DIR/scripts/generate-self-signed-cert.sh" ]; then
+        cert_script="$APP_DIR/scripts/generate-self-signed-cert.sh"
+    else
+        print_error "找不到证书生成脚本"
+        print_info "请确保已安装服务：$0 install"
+        return 1
+    fi
+
+    # 确保脚本有执行权限
+    chmod +x "$cert_script" 2>/dev/null || {
+        print_error "无法设置脚本执行权限"
+        return 1
+    }
+
+    # 执行证书生成脚本
+    print_info "执行证书生成脚本: $cert_script"
+    bash "$cert_script"
+
+    local exit_code=$?
+    if [ $exit_code -eq 0 ]; then
+        print_success "证书生成成功！"
+        echo ""
+        print_info "下一步操作："
+        echo "1. 配置 .env 文件启用 HTTPS："
+        echo "   HTTPS_ENABLED=true"
+        echo "   HTTPS_PORT=3443"
+        echo "   HTTPS_CERT_PATH=\$(pwd)/certs/cert.pem"
+        echo "   HTTPS_KEY_PATH=\$(pwd)/certs/key.pem"
+        echo "   HTTPS_REDIRECT_HTTP=true"
+        echo ""
+        echo "2. 重启服务："
+        echo "   crs restart"
+        echo ""
+        echo "3. 访问 HTTPS 服务："
+        echo "   https://localhost:3443"
+    else
+        print_error "证书生成失败"
+        return $exit_code
+    fi
+}
+
 create_symlink() {
     # 获取脚本的绝对路径
     local script_path=""
-    
+
     # 优先使用项目中的 manage.sh（在 app/scripts 目录下）
     if [ -n "$APP_DIR" ] && [ -f "$APP_DIR/scripts/manage.sh" ]; then
         script_path="$APP_DIR/scripts/manage.sh"
@@ -1626,13 +1674,13 @@ create_symlink() {
         # 备用方法：使用pwd和脚本名
         script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
     fi
-    
+
     local symlink_path="/usr/bin/crs"
-    
+
     print_info "创建命令行快捷方式..."
     print_info "APP_DIR: $APP_DIR"
     print_info "脚本路径: $script_path"
-    
+
     # 检查脚本文件是否存在
     if [ ! -f "$script_path" ]; then
         print_error "找不到脚本文件: $script_path"
@@ -1648,7 +1696,7 @@ create_symlink() {
         fi
         return 1
     fi
-    
+
     # 如果已存在，直接删除并重新创建（默认使用代码中的最新版本）
     if [ -L "$symlink_path" ] || [ -f "$symlink_path" ]; then
         print_info "更新已存在的软链接..."
@@ -1657,12 +1705,12 @@ create_symlink() {
             return 1
         }
     fi
-    
+
     # 创建软链接
     if sudo ln -s "$script_path" "$symlink_path"; then
         print_success "已创建快捷命令 'crs'"
         echo "您现在可以在任何地方使用 'crs' 命令管理服务"
-        
+
         # 验证软链接
         if [ -L "$symlink_path" ]; then
             print_info "软链接验证成功"
@@ -1771,6 +1819,16 @@ main() {
             ;;
         update-pricing)
             update_model_pricing
+            ;;
+        gen-cert|generate-cert)
+            # 生成 HTTPS 自签名证书
+            # 确保 APP_DIR 已设置
+            if [ -z "$APP_DIR" ]; then
+                print_error "请先安装项目后再生成证书"
+                print_info "运行: $0 install"
+                exit 1
+            fi
+            generate_ssl_cert
             ;;
         symlink)
             # 单独创建软链接
