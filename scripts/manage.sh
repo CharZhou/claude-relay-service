@@ -21,11 +21,11 @@ DEFAULT_REDIS_PASSWORD=""
 DEFAULT_APP_PORT="3000"
 
 # GitHub 仓库配置 - 自动从当前 Git 仓库检测或通过环境变量 REPO_URL 覆盖
-# 检测逻辑: REPO_URL 环境变量 > 当前 Git remote > Wei-Shaw 原始仓库(fallback)
+# 检测逻辑: REPO_URL 环境变量 > 当前 Git remote > 检测失败报错
 detect_repo_url() {
     if [ -n "$REPO_URL" ]; then
         echo "$REPO_URL"
-        return
+        return 0
     fi
 
     # 尝试从当前脚本所在的仓库获取 remote URL
@@ -36,15 +36,18 @@ detect_repo_url() {
         local remote_url=$(cd "$repo_root" && git config --get remote.origin.url 2>/dev/null)
         if [ -n "$remote_url" ]; then
             echo "$remote_url"
-            return
+            return 0
         fi
     fi
 
-    # Fallback 到原始仓库
-    echo "https://github.com/Wei-Shaw/claude-relay-service.git"
+    # 检测失败，返回空并设置错误状态
+    return 1
 }
 
-REPO_URL=$(detect_repo_url)
+# 检测仓库 URL，失败则显示错误提示
+if ! REPO_URL=$(detect_repo_url); then
+    REPO_URL=""
+fi
 
 # 全局变量
 INSTALL_DIR=""
@@ -429,12 +432,31 @@ install_service() {
     # 创建安装目录
     mkdir -p "$INSTALL_DIR"
     
+    # 检查仓库 URL
+    if [ -z "$REPO_URL" ]; then
+        print_error "无法检测到仓库地址！"
+        echo ""
+        echo "请通过以下方式之一设置仓库地址："
+        echo ""
+        echo "1. 设置环境变量（推荐）："
+        echo "   export REPO_URL=\"https://github.com/<your-username>/claude-relay-service.git\""
+        echo "   $0 install"
+        echo ""
+        echo "2. 从 Git 仓库运行此脚本："
+        echo "   git clone https://github.com/<your-username>/claude-relay-service.git"
+        echo "   cd claude-relay-service"
+        echo "   ./scripts/manage.sh install"
+        echo ""
+        return 1
+    fi
+
     # 克隆项目
     print_info "克隆项目代码..."
+    print_info "仓库地址: $REPO_URL"
     if [ -d "$APP_DIR" ]; then
         rm -rf "$APP_DIR"
     fi
-    
+
     if ! git clone "$REPO_URL" "$APP_DIR"; then
         print_error "克隆项目失败"
         return 1
