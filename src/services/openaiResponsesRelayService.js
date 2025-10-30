@@ -106,7 +106,8 @@ class OpenAIResponsesRelayService {
       'request limit',
       'slow down',
       '积分不足',
-      '压力过大'
+      '压力过大',
+      '额度已用完'
     ]
 
     const message = this._extractErrorMessage(body)
