@@ -20,35 +20,6 @@ DEFAULT_REDIS_PORT="6379"
 DEFAULT_REDIS_PASSWORD=""
 DEFAULT_APP_PORT="3000"
 
-# GitHub 仓库配置 - 自动从当前 Git 仓库检测或通过环境变量 REPO_URL 覆盖
-# 检测逻辑: REPO_URL 环境变量 > 当前 Git remote > 检测失败报错
-detect_repo_url() {
-    if [ -n "$REPO_URL" ]; then
-        echo "$REPO_URL"
-        return 0
-    fi
-
-    # 尝试从当前脚本所在的仓库获取 remote URL
-    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local repo_root="$(cd "$script_dir/.." && pwd)"
-
-    if [ -d "$repo_root/.git" ]; then
-        local remote_url=$(cd "$repo_root" && git config --get remote.origin.url 2>/dev/null)
-        if [ -n "$remote_url" ]; then
-            echo "$remote_url"
-            return 0
-        fi
-    fi
-
-    # 检测失败，返回空并设置错误状态
-    return 1
-}
-
-# 检测仓库 URL，失败则显示错误提示
-if ! REPO_URL=$(detect_repo_url); then
-    REPO_URL=""
-fi
-
 # 全局变量
 INSTALL_DIR=""
 APP_DIR=""
@@ -432,32 +403,13 @@ install_service() {
     # 创建安装目录
     mkdir -p "$INSTALL_DIR"
     
-    # 检查仓库 URL
-    if [ -z "$REPO_URL" ]; then
-        print_error "无法检测到仓库地址！"
-        echo ""
-        echo "请通过以下方式之一设置仓库地址："
-        echo ""
-        echo "1. 设置环境变量（推荐）："
-        echo "   export REPO_URL=\"https://github.com/<your-username>/claude-relay-service.git\""
-        echo "   $0 install"
-        echo ""
-        echo "2. 从 Git 仓库运行此脚本："
-        echo "   git clone https://github.com/<your-username>/claude-relay-service.git"
-        echo "   cd claude-relay-service"
-        echo "   ./scripts/manage.sh install"
-        echo ""
-        return 1
-    fi
-
     # 克隆项目
     print_info "克隆项目代码..."
-    print_info "仓库地址: $REPO_URL"
     if [ -d "$APP_DIR" ]; then
         rm -rf "$APP_DIR"
     fi
-
-    if ! git clone "$REPO_URL" "$APP_DIR"; then
+    
+    if ! git clone https://github.com/Wei-Shaw/claude-relay-service.git "$APP_DIR"; then
         print_error "克隆项目失败"
         return 1
     fi
@@ -523,11 +475,11 @@ EOF
         
         # 使用 sparse-checkout 来只获取需要的文件
         git clone --depth 1 --branch web-dist --single-branch \
-            "$REPO_URL" \
+            https://github.com/Wei-Shaw/claude-relay-service.git \
             "$TEMP_CLONE_DIR" 2>/dev/null || {
-            # 如果失败，尝试使用当前仓库的 remote URL
-            LOCAL_REPO_URL=$(git config --get remote.origin.url)
-            git clone --depth 1 --branch web-dist --single-branch "$LOCAL_REPO_URL" "$TEMP_CLONE_DIR"
+            # 如果 HTTPS 失败，尝试使用当前仓库的 remote URL
+            REPO_URL=$(git config --get remote.origin.url)
+            git clone --depth 1 --branch web-dist --single-branch "$REPO_URL" "$TEMP_CLONE_DIR"
         }
         
         # 复制文件到目标目录（排除 .git 和 README.md）
@@ -726,14 +678,14 @@ update_service() {
             print_info "尝试下载前端文件 (第 $attempt 次)..."
             
             if git clone --depth 1 --branch web-dist --single-branch \
-                "$REPO_URL" \
+                https://github.com/Wei-Shaw/claude-relay-service.git \
                 "$TEMP_CLONE_DIR" 2>/dev/null; then
                 clone_success=true
                 break
             fi
-
-            # 如果失败，尝试使用当前仓库的 remote URL
-            LOCAL_REPO_URL=$(git config --get remote.origin.url)
+            
+            # 如果 HTTPS 失败，尝试使用当前仓库的 remote URL
+            REPO_URL=$(git config --get remote.origin.url)
             if git clone --depth 1 --branch web-dist --single-branch "$REPO_URL" "$TEMP_CLONE_DIR" 2>/dev/null; then
                 clone_success=true
                 break
@@ -1260,7 +1212,7 @@ switch_branch() {
             
             # 下载前端文件
             if git clone --depth 1 --branch "$web_branch" --single-branch \
-                "$REPO_URL" \
+                https://github.com/Wei-Shaw/claude-relay-service.git \
                 "$TEMP_CLONE_DIR" 2>/dev/null; then
                 
                 # 复制文件到目标目录
@@ -1407,7 +1359,6 @@ show_help() {
     echo "  status         - 查看状态"
     echo "  switch-branch  - 切换分支"
     echo "  update-pricing - 更新模型价格数据"
-    echo "  gen-cert       - 生成 HTTPS 自签名证书（开发用）"
     echo "  symlink        - 创建 crs 快捷命令"
     echo "  help           - 显示帮助"
     echo ""
@@ -1607,57 +1558,10 @@ handle_menu_choice() {
 }
 
 # 创建软链接
-# 生成 HTTPS 自签名证书
-generate_ssl_cert() {
-    print_info "生成 HTTPS 自签名证书..."
-
-    # 确定证书生成脚本路径
-    local cert_script=""
-    if [ -n "$APP_DIR" ] && [ -f "$APP_DIR/scripts/generate-self-signed-cert.sh" ]; then
-        cert_script="$APP_DIR/scripts/generate-self-signed-cert.sh"
-    else
-        print_error "找不到证书生成脚本"
-        print_info "请确保已安装服务：$0 install"
-        return 1
-    fi
-
-    # 确保脚本有执行权限
-    chmod +x "$cert_script" 2>/dev/null || {
-        print_error "无法设置脚本执行权限"
-        return 1
-    }
-
-    # 执行证书生成脚本
-    print_info "执行证书生成脚本: $cert_script"
-    bash "$cert_script"
-
-    local exit_code=$?
-    if [ $exit_code -eq 0 ]; then
-        print_success "证书生成成功！"
-        echo ""
-        print_info "下一步操作："
-        echo "1. 配置 .env 文件启用 HTTPS："
-        echo "   HTTPS_ENABLED=true"
-        echo "   HTTPS_PORT=3443"
-        echo "   HTTPS_CERT_PATH=\$(pwd)/certs/cert.pem"
-        echo "   HTTPS_KEY_PATH=\$(pwd)/certs/key.pem"
-        echo "   HTTPS_REDIRECT_HTTP=true"
-        echo ""
-        echo "2. 重启服务："
-        echo "   crs restart"
-        echo ""
-        echo "3. 访问 HTTPS 服务："
-        echo "   https://localhost:3443"
-    else
-        print_error "证书生成失败"
-        return $exit_code
-    fi
-}
-
 create_symlink() {
     # 获取脚本的绝对路径
     local script_path=""
-
+    
     # 优先使用项目中的 manage.sh（在 app/scripts 目录下）
     if [ -n "$APP_DIR" ] && [ -f "$APP_DIR/scripts/manage.sh" ]; then
         script_path="$APP_DIR/scripts/manage.sh"
@@ -1674,13 +1578,13 @@ create_symlink() {
         # 备用方法：使用pwd和脚本名
         script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
     fi
-
+    
     local symlink_path="/usr/bin/crs"
-
+    
     print_info "创建命令行快捷方式..."
     print_info "APP_DIR: $APP_DIR"
     print_info "脚本路径: $script_path"
-
+    
     # 检查脚本文件是否存在
     if [ ! -f "$script_path" ]; then
         print_error "找不到脚本文件: $script_path"
@@ -1696,7 +1600,7 @@ create_symlink() {
         fi
         return 1
     fi
-
+    
     # 如果已存在，直接删除并重新创建（默认使用代码中的最新版本）
     if [ -L "$symlink_path" ] || [ -f "$symlink_path" ]; then
         print_info "更新已存在的软链接..."
@@ -1705,12 +1609,12 @@ create_symlink() {
             return 1
         }
     fi
-
+    
     # 创建软链接
     if sudo ln -s "$script_path" "$symlink_path"; then
         print_success "已创建快捷命令 'crs'"
         echo "您现在可以在任何地方使用 'crs' 命令管理服务"
-
+        
         # 验证软链接
         if [ -L "$symlink_path" ]; then
             print_info "软链接验证成功"
@@ -1819,16 +1723,6 @@ main() {
             ;;
         update-pricing)
             update_model_pricing
-            ;;
-        gen-cert|generate-cert)
-            # 生成 HTTPS 自签名证书
-            # 确保 APP_DIR 已设置
-            if [ -z "$APP_DIR" ]; then
-                print_error "请先安装项目后再生成证书"
-                print_info "运行: $0 install"
-                exit 1
-            fi
-            generate_ssl_cert
             ;;
         symlink)
             # 单独创建软链接
