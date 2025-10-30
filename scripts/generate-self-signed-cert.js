@@ -170,7 +170,7 @@ async function main() {
     log('⚠️  安全提示:', 'yellow')
     console.log('   - 自签名证书仅用于开发/测试环境')
     console.log('   - 浏览器会显示安全警告（正常现象）')
-    console.log('   - 生产环境请使用 Let\'s Encrypt 或商业 CA 证书')
+    console.log("   - 生产环境请使用 Let's Encrypt 或商业 CA 证书")
     console.log(`   - 不要将私钥文件 (${keyFile}) 提交到版本控制`)
     console.log('')
   } catch (error) {
