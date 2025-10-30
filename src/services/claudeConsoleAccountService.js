@@ -66,7 +66,8 @@ class ClaudeConsoleAccountService {
       accountType = 'shared', // 'dedicated' or 'shared'
       schedulable = true, // 是否可被调度
       dailyQuota = 0, // 每日额度限制（美元），0表示不限制
-      quotaResetTime = '00:00' // 额度重置时间（HH:mm格式）
+      quotaResetTime = '00:00', // 额度重置时间（HH:mm格式）
+      maxConcurrentTasks = 0 // 最大并发任务数，0表示无限制
     } = options
 
     // 验证必填字段
@@ -120,7 +121,8 @@ class ClaudeConsoleAccountService {
       // 使用与统计一致的时区日期，避免边界问题
       lastResetDate: redis.getDateStringInTimezone(), // 最后重置日期（按配置时区）
       quotaResetTime, // 额度重置时间
-      quotaStoppedAt: '' // 因额度停用的时间
+      quotaStoppedAt: '', // 因额度停用的时间
+      maxConcurrentTasks: maxConcurrentTasks.toString() // 最大并发任务数，0表示无限制
     }
 
     const client = redis.getClientSafe()
@@ -156,7 +158,9 @@ class ClaudeConsoleAccountService {
       dailyUsage: 0,
       lastResetDate: accountData.lastResetDate,
       quotaResetTime,
-      quotaStoppedAt: null
+      quotaStoppedAt: null,
+      maxConcurrentTasks, // 新增：返回并发限制配置
+      activeTaskCount: 0 // 新增：新建账户当前并发数为0
     }
   }
 
@@ -178,6 +182,9 @@ class ClaudeConsoleAccountService {
 
           // 获取限流状态信息
           const rateLimitInfo = this._getRateLimitInfo(accountData)
+
+          // 获取实时并发计数
+          const activeTaskCount = await redis.getConsoleAccountConcurrency(accountData.id)
 
           accounts.push({
             id: accountData.id,
@@ -210,7 +217,11 @@ class ClaudeConsoleAccountService {
             dailyUsage: parseFloat(accountData.dailyUsage || '0'),
             lastResetDate: accountData.lastResetDate || '',
             quotaResetTime: accountData.quotaResetTime || '00:00',
-            quotaStoppedAt: accountData.quotaStoppedAt || null
+            quotaStoppedAt: accountData.quotaStoppedAt || null,
+
+            // 并发控制相关
+            maxConcurrentTasks: parseInt(accountData.maxConcurrentTasks) || 0,
+            activeTaskCount
           })
         }
       }
@@ -260,6 +271,11 @@ class ClaudeConsoleAccountService {
     if (accountData.proxy) {
       accountData.proxy = JSON.parse(accountData.proxy)
     }
+
+    // 解析并发控制字段
+    accountData.maxConcurrentTasks = parseInt(accountData.maxConcurrentTasks) || 0
+    // 获取实时并发计数
+    accountData.activeTaskCount = await redis.getConsoleAccountConcurrency(accountId)
 
     logger.debug(
       `[DEBUG] Final account data - name: ${accountData.name}, hasApiUrl: ${!!accountData.apiUrl}, hasApiKey: ${!!accountData.apiKey}, supportedModels: ${JSON.stringify(accountData.supportedModels)}`
@@ -360,6 +376,11 @@ class ClaudeConsoleAccountService {
           '⚠️ Deprecated field "expiresAt" used in updateAccount. Please use "subscriptionExpiresAt" instead.'
         )
         updates.subscriptionExpiresAt = updates.expiresAt
+      }
+
+      // 并发控制相关字段
+      if (updates.maxConcurrentTasks !== undefined) {
+        updatedData.maxConcurrentTasks = updates.maxConcurrentTasks.toString()
       }
 
       // ✅ 直接保存 subscriptionExpiresAt（如果提供）

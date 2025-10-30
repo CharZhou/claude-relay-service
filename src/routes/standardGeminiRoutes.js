@@ -144,7 +144,7 @@ async function handleStandardGenerateContent(req, res) {
     const sessionHash = sessionHelper.generateSessionHash(req.body)
 
     // 标准 Gemini API 请求体直接包含 contents 等字段
-    const { contents, generationConfig, safetySettings, systemInstruction } = req.body
+    const { contents, generationConfig, safetySettings, systemInstruction, tools } = req.body
 
     // 验证必需参数
     if (!contents || !Array.isArray(contents) || contents.length === 0) {
@@ -170,6 +170,12 @@ async function handleStandardGenerateContent(req, res) {
     // 只有在 safetySettings 存在且非空时才添加
     if (safetySettings && safetySettings.length > 0) {
       actualRequestData.safetySettings = safetySettings
+    }
+
+    // ✅ 关键修复：添加tools支持
+    if (tools && Array.isArray(tools) && tools.length > 0) {
+      actualRequestData.tools = tools
+      logger.debug(`🔧 Standard Gemini API: Added ${tools.length} tools to request`)
     }
 
     // 如果有 system instruction，修正格式并添加到请求体
@@ -356,7 +362,7 @@ async function handleStandardStreamGenerateContent(req, res) {
     const sessionHash = sessionHelper.generateSessionHash(req.body)
 
     // 标准 Gemini API 请求体直接包含 contents 等字段
-    const { contents, generationConfig, safetySettings, systemInstruction } = req.body
+    const { contents, generationConfig, safetySettings, systemInstruction, tools } = req.body
 
     // 验证必需参数
     if (!contents || !Array.isArray(contents) || contents.length === 0) {
@@ -382,6 +388,12 @@ async function handleStandardStreamGenerateContent(req, res) {
     // 只有在 safetySettings 存在且非空时才添加
     if (safetySettings && safetySettings.length > 0) {
       actualRequestData.safetySettings = safetySettings
+    }
+
+    // ✅ 关键修复：添加tools支持
+    if (tools && Array.isArray(tools) && tools.length > 0) {
+      actualRequestData.tools = tools
+      logger.debug(`🔧 Standard Gemini API: Added ${tools.length} tools to request`)
     }
 
     // 如果有 system instruction，修正格式并添加到请求体

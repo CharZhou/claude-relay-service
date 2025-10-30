@@ -60,11 +60,14 @@
 ## 📦 使用发布的镜像
 
 ```bash
-# 拉取最新版本
-docker pull weishaw/claude-relay-service:latest
+# 拉取最新版本（替换 <your-dockerhub-username> 为你的 Docker Hub 用户名）
+docker pull <your-dockerhub-username>/claude-relay-service:latest
 
 # 拉取特定版本
-docker pull weishaw/claude-relay-service:v1.0.0
+docker pull <your-dockerhub-username>/claude-relay-service:v1.0.0
+
+# 或使用 GitHub Container Registry
+docker pull ghcr.io/<your-github-username>/claude-relay-service:latest
 
 # 运行容器
 docker run -d \
@@ -74,7 +77,7 @@ docker run -d \
   -v ./logs:/app/logs \
   -e ADMIN_USERNAME=my_admin \
   -e ADMIN_PASSWORD=my_password \
-  weishaw/claude-relay-service:latest
+  <your-dockerhub-username>/claude-relay-service:latest
 ```
 
 ## 🔍 验证配置

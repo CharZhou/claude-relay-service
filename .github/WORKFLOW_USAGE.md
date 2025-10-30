@@ -99,11 +99,15 @@ git push origin v1.0.0
 ### Q: 如何回滚到之前的版本？
 
 ```bash
-# 使用特定版本标签
-docker pull weishaw/claude-relay-service:v1.0.0
+# 使用特定版本标签（替换为你的用户名）
+docker pull <your-dockerhub-username>/claude-relay-service:v1.0.0
 
 # 或在 docker-compose.yml 中指定版本
-image: weishaw/claude-relay-service:v1.0.0
+image: <your-dockerhub-username>/claude-relay-service:v1.0.0
+
+# 或使用 GitHub Container Registry
+docker pull ghcr.io/<your-github-username>/claude-relay-service:v1.0.0
+image: ghcr.io/<your-github-username>/claude-relay-service:v1.0.0
 ```
 
 ### Q: 如何跳过自动构建？

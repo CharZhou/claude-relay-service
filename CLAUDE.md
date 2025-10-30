@@ -192,6 +192,35 @@ npm run service:stop          # 停止服务
 - `PROXY_USE_IPV4`: 代理使用IPv4（默认true）
 - `REQUEST_TIMEOUT`: 请求超时时间（毫秒，默认600000即10分钟）
 
+#### HTTPS 配置（可选 - 独立 HTTPS 服务器）
+**注意**：生产环境推荐使用反向代理（Nginx/Caddy）而非独立 HTTPS
+- `HTTPS_ENABLED`: 启用独立 HTTPS 服务器（默认false）
+- `HTTPS_PORT`: HTTPS 端口（默认3443）
+- `HTTPS_CERT_PATH`: SSL 证书路径（PEM 格式）
+- `HTTPS_KEY_PATH`: SSL 私钥路径（PEM 格式）
+- `HTTPS_REDIRECT_HTTP`: 启用 HTTP 到 HTTPS 自动重定向（默认true，仅当 HTTPS_ENABLED=true 时有效）
+
+**使用示例**：
+```bash
+# 开发环境 - 使用自签名证书
+HTTPS_ENABLED=true
+HTTPS_PORT=3443
+HTTPS_CERT_PATH=./certs/cert.pem
+HTTPS_KEY_PATH=./certs/key.pem
+HTTPS_REDIRECT_HTTP=true
+
+# 生成自签名证书（开发用）
+bash scripts/generate-self-signed-cert.sh
+# 或使用 Node.js 版本（跨平台）
+node scripts/generate-self-signed-cert.js
+```
+
+**生产环境推荐配置**：
+- 使用 Caddy（自动 HTTPS）或 Nginx + Let's Encrypt
+- 服务保持 HTTP 模式（`HTTPS_ENABLED=false`）
+- 反向代理处理 SSL 终止
+- 详见 README.md 的 "🔒 HTTPS 配置" 章节
+
 #### AWS Bedrock配置（可选）
 - `CLAUDE_CODE_USE_BEDROCK`: 启用Bedrock（设置为1启用）
 - `AWS_REGION`: AWS默认区域（默认us-east-1）

@@ -70,8 +70,10 @@
 - fix: 修复某个问题
 
 🐳 Docker 部署:
-docker pull weishaw/claude-relay-service:v1.1.3
-docker pull weishaw/claude-relay-service:latest
+docker pull <your-dockerhub-username>/claude-relay-service:v1.1.3
+docker pull <your-dockerhub-username>/claude-relay-service:latest
+# 或使用 GitHub Container Registry
+docker pull ghcr.io/<your-github-username>/claude-relay-service:latest
 
 🔗 相关链接:
 • GitHub Release

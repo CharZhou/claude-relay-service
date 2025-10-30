@@ -66,13 +66,22 @@ class OpenAIToClaudeConverter {
       }
     }
 
+    // 处理用户标识 - 转换 OpenAI 的 user 字段到 Claude 的 metadata.user_id
+    if (openaiRequest.user) {
+      claudeRequest.metadata = {
+        user_id: openaiRequest.user
+      }
+      logger.debug(`👤 User metadata added: ${openaiRequest.user}`)
+    }
+
     // OpenAI 特有的参数已在转换过程中被忽略
-    // 包括: n, presence_penalty, frequency_penalty, logit_bias, user
+    // 包括: n, presence_penalty, frequency_penalty, logit_bias
 
     logger.debug('📝 Converted OpenAI request to Claude format:', {
       model: claudeRequest.model,
       messageCount: claudeRequest.messages.length,
       hasSystem: !!claudeRequest.system,
+      hasMetadata: !!claudeRequest.metadata,
       stream: claudeRequest.stream
     })
 
