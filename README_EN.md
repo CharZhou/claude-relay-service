@@ -1,7 +1,5 @@
 # Claude Relay Service
 
-> **📢 Fork Notice**: This is a forked version from [Wei-Shaw/claude-relay-service](https://github.com/Wei-Shaw/claude-relay-service), configured to automatically adapt to forked repositories. All builds and releases will automatically use your GitHub account. See [Fork Setup Guide](.github/FORK_SETUP_GUIDE.md).
-
 <div align="center">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
