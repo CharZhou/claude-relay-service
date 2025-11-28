@@ -85,6 +85,11 @@ class Application {
       const claudeAccountService = require('./services/claudeAccountService')
       await claudeAccountService.initializeSessionWindows()
 
+      // 📊 初始化费用排序索引服务
+      logger.info('📊 Initializing cost rank service...')
+      const costRankService = require('./services/costRankService')
+      await costRankService.initialize()
+
       // 超早期拦截 /admin-next/ 请求 - 在所有中间件之前
       this.app.use((req, res, next) => {
         if (req.path === '/admin-next/' && req.method === 'GET') {
@@ -525,7 +530,9 @@ class Application {
             )
           })
 
-          logger.info(`⏱️  HTTPS server timeout set to ${serverTimeout}ms (${serverTimeout / 1000}s)`)
+          logger.info(
+            `⏱️  HTTPS server timeout set to ${serverTimeout}ms (${serverTimeout / 1000}s)`
+          )
         } catch (certError) {
           logger.error('💥 Failed to load SSL certificates:', certError)
           logger.error('   Please check HTTPS_CERT_PATH and HTTPS_KEY_PATH configuration')
@@ -538,9 +545,7 @@ class Application {
         logger.info('🌐 Initializing HTTP server...')
 
         this.httpServer = this.app.listen(config.server.port, config.server.host, () => {
-          logger.start(
-            `🚀 HTTP server started on ${config.server.host}:${config.server.port}`
-          )
+          logger.start(`🚀 HTTP server started on ${config.server.host}:${config.server.port}`)
           logger.info(
             `🌐 Web interface: http://${config.server.host}:${config.server.port}/admin-next/api-stats`
           )
@@ -548,9 +553,7 @@ class Application {
             `🔗 API endpoint: http://${config.server.host}:${config.server.port}/api/v1/messages`
           )
           logger.info(`⚙️  Admin API: http://${config.server.host}:${config.server.port}/admin`)
-          logger.info(
-            `🏥 Health check: http://${config.server.host}:${config.server.port}/health`
-          )
+          logger.info(`🏥 Health check: http://${config.server.host}:${config.server.port}/health`)
           logger.info(`📊 Metrics: http://${config.server.host}:${config.server.port}/metrics`)
         })
 
@@ -758,6 +761,15 @@ class Application {
           logger.info('👋 Redis disconnected')
         } catch (error) {
           logger.error('❌ Error disconnecting Redis:', error)
+        }
+
+        // 停止费用排序索引服务
+        try {
+          const costRankService = require('./services/costRankService')
+          costRankService.shutdown()
+          logger.info('📊 Cost rank service stopped')
+        } catch (error) {
+          logger.error('❌ Error stopping cost rank service:', error)
         }
 
         logger.success('✅ Graceful shutdown completed')
