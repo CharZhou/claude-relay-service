@@ -10,61 +10,11 @@ const {
   sanitizeErrorMessage,
   isAccountDisabledError
 } = require('../utils/errorSanitizer')
+const { isRateLimitError } = require('../utils/rateLimitHelper')
 
 class ClaudeConsoleRelayService {
   constructor() {
     this.defaultUserAgent = 'claude-cli/2.0.52 (external, cli)'
-  }
-
-  // 🔍 检测错误消息中是否包含限流相关内容
-  _isRateLimitError(responseData) {
-    try {
-      let errorMessage = ''
-
-      // 提取错误消息
-      if (typeof responseData === 'string') {
-        errorMessage = responseData
-        // 尝试解析为 JSON
-        try {
-          const parsed = JSON.parse(responseData)
-          errorMessage = this._extractErrorMessage(parsed)
-        } catch (e) {
-          // 保持原始字符串
-        }
-      } else if (typeof responseData === 'object') {
-        errorMessage = this._extractErrorMessage(responseData)
-      }
-
-      if (!errorMessage) {
-        return false
-      }
-
-      // 转换为小写进行匹配
-      const lowerMessage = errorMessage.toLowerCase()
-
-      // 限流相关的关键词列表
-      const rateLimitPatterns = [
-        'rate limit',
-        'rate_limit',
-        'ratelimit',
-        'too many requests',
-        'request limit',
-        'quota exceeded',
-        'throttled',
-        'slow down',
-        '请求过于频繁',
-        '频率限制',
-        '积分不足',
-        '压力过大',
-        '额度已用完'
-      ]
-
-      // 检查是否匹配任何限流关键词
-      return rateLimitPatterns.some((pattern) => lowerMessage.includes(pattern))
-    } catch (error) {
-      logger.debug('Error checking rate limit message:', error)
-      return false
-    }
   }
 
   // 🧾 提取错误消息文本
@@ -358,7 +308,7 @@ class ClaudeConsoleRelayService {
       } else if (response.status === 529) {
         logger.warn(`🚫 Overload error detected for Claude Console account ${accountId}`)
         await claudeConsoleAccountService.markAccountOverloaded(accountId)
-      } else if (response.status >= 400 && this._isRateLimitError(response.data)) {
+      } else if (response.status >= 400 && isRateLimitError(response.data)) {
         // 🔍 通过错误消息检测到限流
         const upstreamErrorMessage = this._extractErrorMessage(response.data)
         logger.warn(
@@ -726,7 +676,7 @@ class ClaudeConsoleRelayService {
                 })
               } else if (response.status === 529) {
                 await claudeConsoleAccountService.markAccountOverloaded(accountId)
-              } else if (response.status >= 400 && this._isRateLimitError(errorDataForCheck)) {
+              } else if (response.status >= 400 && isRateLimitError(errorDataForCheck)) {
                 // 🔍 通过错误消息检测到限流
                 const upstreamErrorMessage = this._extractErrorMessage(errorDataForCheck)
                 logger.warn(

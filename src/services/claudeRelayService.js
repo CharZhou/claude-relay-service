@@ -15,6 +15,7 @@ const { formatDateWithTimezone } = require('../utils/dateHelper')
 const runtimeAddon = require('../utils/runtimeAddon')
 const teamMemoryService = require('./teamMemoryService')
 const requestIdentityService = require('./requestIdentityService')
+const { isRateLimitError } = require('../utils/rateLimitHelper')
 
 const RUNTIME_EVENT_FMT_CLAUDE_REQ = 'fmtClaudeReq'
 
@@ -124,43 +125,6 @@ class ClaudeRelayService {
     }
 
     return ''
-  }
-
-  // 🔍 检测错误消息中是否包含限流相关内容
-  _isRateLimitError(responseData) {
-    try {
-      const errorMessage = this._extractErrorMessage(responseData)
-
-      if (!errorMessage) {
-        return false
-      }
-
-      // 转换为小写进行匹配
-      const lowerMessage = errorMessage.toLowerCase()
-
-      // 限流相关的关键词列表
-      const rateLimitPatterns = [
-        'rate limit',
-        'rate_limit',
-        'ratelimit',
-        'too many requests',
-        'request limit',
-        'quota exceeded',
-        'throttled',
-        'slow down',
-        '请求过于频繁',
-        '频率限制',
-        '积分不足',
-        '压力过大',
-        '额度已用完'
-      ]
-
-      // 检查是否匹配任何限流关键词
-      return rateLimitPatterns.some((pattern) => lowerMessage.includes(pattern))
-    } catch (error) {
-      logger.debug('Error checking rate limit message:', error)
-      return false
-    }
   }
 
   // 🚫 检查是否为组织被禁用错误
@@ -437,7 +401,7 @@ class ClaudeRelayService {
           }
         }
         // 🔍 通过错误消息检测限流
-        else if (this._isRateLimitError(response.body)) {
+        else if (isRateLimitError(response.body)) {
           // 提取上游的实际错误消息
           const upstreamErrorMessage = this._extractErrorMessage(response.body)
           logger.warn(
@@ -1769,7 +1733,7 @@ class ClaudeRelayService {
                   }
 
                   // 🔍 检查是否有限流错误
-                  if (data.type === 'error' && this._isRateLimitError(data)) {
+                  if (data.type === 'error' && isRateLimitError(data)) {
                     rateLimitDetected = true
                     // 提取上游错误消息
                     upstreamRateLimitMessage = this._extractErrorMessage(data)

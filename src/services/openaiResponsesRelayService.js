@@ -7,6 +7,7 @@ const unifiedOpenAIScheduler = require('./unifiedOpenAIScheduler')
 const config = require('../../config/config')
 const crypto = require('crypto')
 const teamMemoryService = require('./teamMemoryService')
+const { isRateLimitErrorWithStatus } = require('../utils/rateLimitHelper')
 
 // 抽取缓存写入 token，兼容多种字段命名
 function extractCacheCreationTokens(usageData) {
@@ -82,57 +83,6 @@ class OpenAIResponsesRelayService {
     }
 
     return ''
-  }
-
-  // 判断响应是否为限流错误
-  _isRateLimitError(statusCode, body) {
-    if (statusCode === 429) {
-      return true
-    }
-
-    if (!body) {
-      return false
-    }
-
-    const rateLimitPatterns = [
-      'rate limit',
-      'ratelimit',
-      'quota',
-      'insufficient_quota',
-      'exceeded your current quota',
-      'billing hard limit',
-      'overloaded',
-      'too many requests',
-      'request limit',
-      'slow down',
-      '积分不足',
-      '压力过大',
-      '额度已用完'
-    ]
-
-    const message = this._extractErrorMessage(body)
-    const messageMatched =
-      message && rateLimitPatterns.some((pattern) => message.toLowerCase().includes(pattern))
-
-    if (messageMatched) {
-      return true
-    }
-
-    if (typeof body === 'object' && body.error && typeof body.error === 'object') {
-      const candidateValues = [body.error.code, body.error.type, body.error.error]
-        .filter(Boolean)
-        .map((value) => String(value).toLowerCase())
-
-      if (
-        candidateValues.some((value) =>
-          rateLimitPatterns.some((pattern) => value.includes(pattern))
-        )
-      ) {
-        return true
-      }
-    }
-
-    return false
   }
 
   // 抽取限流恢复时间（秒）
@@ -427,7 +377,7 @@ class OpenAIResponsesRelayService {
           return res.status(401).json(unauthorizedResponse)
         }
 
-        if (this._isRateLimitError(response.status, errorData)) {
+        if (isRateLimitErrorWithStatus(response.status, errorData)) {
           const resetsInSeconds = this._extractResetSeconds(errorData, response.headers)
           const errorMessage = this._extractErrorMessage(errorData)
           logger.warn('⚠️ OpenAI-Responses rate limit detected from error payload', {
@@ -592,7 +542,7 @@ class OpenAIResponsesRelayService {
           return res.status(401).json(unauthorizedResponse)
         }
 
-        if (this._isRateLimitError(status, errorData)) {
+        if (isRateLimitErrorWithStatus(status, errorData)) {
           const resetsInSeconds = this._extractResetSeconds(errorData, error.response.headers)
           const errorMessage = this._extractErrorMessage(errorData)
           logger.warn('⚠️ OpenAI-Responses rate limit detected in axios error response', {
