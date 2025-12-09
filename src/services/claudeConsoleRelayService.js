@@ -73,6 +73,8 @@ class ClaudeConsoleRelayService {
         throw new Error('Claude Console Claude account not found')
       }
 
+      const autoProtectionDisabled = account.disableAutoProtection === true
+
       logger.info(
         `📤 Processing Claude Console API request for key: ${apiKeyData.name || apiKeyData.id}, account: ${account.name} (${accountId}), request: ${requestId}`
       )
@@ -287,34 +289,50 @@ class ClaudeConsoleRelayService {
 
       // 检查错误状态并相应处理
       if (response.status === 401) {
-        logger.warn(`🚫 Unauthorized error detected for Claude Console account ${accountId}`)
-        await claudeConsoleAccountService.markAccountUnauthorized(accountId)
+        logger.warn(
+          `🚫 Unauthorized error detected for Claude Console account ${accountId}${autoProtectionDisabled ? ' (auto-protection disabled, skipping status change)' : ''}`
+        )
+        if (!autoProtectionDisabled) {
+          await claudeConsoleAccountService.markAccountUnauthorized(accountId)
+        }
       } else if (accountDisabledError) {
         logger.error(
-          `🚫 Account disabled error (400) detected for Claude Console account ${accountId}, marking as blocked`
+          `🚫 Account disabled error (400) detected for Claude Console account ${accountId}${autoProtectionDisabled ? ' (auto-protection disabled, skipping status change)' : ''}`
         )
         // 传入完整的错误详情到 webhook
         const errorDetails =
           typeof response.data === 'string' ? response.data : JSON.stringify(response.data)
-        await claudeConsoleAccountService.markConsoleAccountBlocked(accountId, errorDetails)
+        if (!autoProtectionDisabled) {
+          await claudeConsoleAccountService.markConsoleAccountBlocked(accountId, errorDetails)
+        }
       } else if (response.status === 429) {
-        logger.warn(`🚫 Rate limit detected for Claude Console account ${accountId}`)
+        logger.warn(
+          `🚫 Rate limit detected for Claude Console account ${accountId}${autoProtectionDisabled ? ' (auto-protection disabled, skipping status change)' : ''}`
+        )
         // 收到429先检查是否因为超过了手动配置的每日额度
         await claudeConsoleAccountService.checkQuotaUsage(accountId).catch((err) => {
           logger.error('❌ Failed to check quota after 429 error:', err)
         })
 
-        await claudeConsoleAccountService.markAccountRateLimited(accountId, 'HTTP 429')
+        if (!autoProtectionDisabled) {
+          await claudeConsoleAccountService.markAccountRateLimited(accountId, 'HTTP 429')
+        }
       } else if (response.status === 529) {
-        logger.warn(`🚫 Overload error detected for Claude Console account ${accountId}`)
-        await claudeConsoleAccountService.markAccountOverloaded(accountId)
+        logger.warn(
+          `🚫 Overload error detected for Claude Console account ${accountId}${autoProtectionDisabled ? ' (auto-protection disabled, skipping status change)' : ''}`
+        )
+        if (!autoProtectionDisabled) {
+          await claudeConsoleAccountService.markAccountOverloaded(accountId)
+        }
       } else if (response.status >= 400 && isRateLimitError(response.data)) {
         // 🔍 通过错误消息检测到限流
         const upstreamErrorMessage = this._extractErrorMessage(response.data)
         logger.warn(
-          `🚫 Rate limit detected by error message for Claude Console account ${accountId} (status: ${response.status}), upstream message: ${upstreamErrorMessage}`
+          `🚫 Rate limit detected by error message for Claude Console account ${accountId} (status: ${response.status}), upstream message: ${upstreamErrorMessage}${autoProtectionDisabled ? ' (auto-protection disabled, skipping status change)' : ''}`
         )
-        await claudeConsoleAccountService.markAccountRateLimited(accountId, upstreamErrorMessage)
+        if (!autoProtectionDisabled) {
+          await claudeConsoleAccountService.markAccountRateLimited(accountId, upstreamErrorMessage)
+        }
       } else if (response.status === 200 || response.status === 201) {
         // 如果请求成功，检查并移除错误状态
         const isRateLimited = await claudeConsoleAccountService.isAccountRateLimited(accountId)
@@ -646,6 +664,7 @@ class ClaudeConsoleRelayService {
             })
 
             response.data.on('end', async () => {
+              const autoProtectionDisabled = account.disableAutoProtection === true
               // 记录原始错误消息到日志（方便调试，包含供应商信息）
               logger.error(
                 `📝 [Stream] Upstream error response from ${account?.name || accountId}: ${errorDataForCheck.substring(0, 500)}`
@@ -658,34 +677,53 @@ class ClaudeConsoleRelayService {
               )
 
               if (response.status === 401) {
-                await claudeConsoleAccountService.markAccountUnauthorized(accountId)
+                logger.warn(
+                  `🚫 [Stream] Unauthorized error detected for Claude Console account ${accountId}${autoProtectionDisabled ? ' (auto-protection disabled, skipping status change)' : ''}`
+                )
+                if (!autoProtectionDisabled) {
+                  await claudeConsoleAccountService.markAccountUnauthorized(accountId)
+                }
               } else if (accountDisabledError) {
                 logger.error(
-                  `🚫 [Stream] Account disabled error (400) detected for Claude Console account ${accountId}, marking as blocked`
+                  `🚫 [Stream] Account disabled error (400) detected for Claude Console account ${accountId}${autoProtectionDisabled ? ' (auto-protection disabled, skipping status change)' : ''}`
                 )
                 // 传入完整的错误详情到 webhook
-                await claudeConsoleAccountService.markConsoleAccountBlocked(
-                  accountId,
-                  errorDataForCheck
-                )
+                if (!autoProtectionDisabled) {
+                  await claudeConsoleAccountService.markConsoleAccountBlocked(
+                    accountId,
+                    errorDataForCheck
+                  )
+                }
               } else if (response.status === 429) {
-                await claudeConsoleAccountService.markAccountRateLimited(accountId, 'HTTP 429')
+                logger.warn(
+                  `🚫 [Stream] Rate limit detected for Claude Console account ${accountId}${autoProtectionDisabled ? ' (auto-protection disabled, skipping status change)' : ''}`
+                )
                 // 检查是否因为超过每日额度
                 claudeConsoleAccountService.checkQuotaUsage(accountId).catch((err) => {
                   logger.error('❌ Failed to check quota after 429 error:', err)
                 })
+                if (!autoProtectionDisabled) {
+                  await claudeConsoleAccountService.markAccountRateLimited(accountId, 'HTTP 429')
+                }
               } else if (response.status === 529) {
-                await claudeConsoleAccountService.markAccountOverloaded(accountId)
+                logger.warn(
+                  `🚫 [Stream] Overload error detected for Claude Console account ${accountId}${autoProtectionDisabled ? ' (auto-protection disabled, skipping status change)' : ''}`
+                )
+                if (!autoProtectionDisabled) {
+                  await claudeConsoleAccountService.markAccountOverloaded(accountId)
+                }
               } else if (response.status >= 400 && isRateLimitError(errorDataForCheck)) {
                 // 🔍 通过错误消息检测到限流
                 const upstreamErrorMessage = this._extractErrorMessage(errorDataForCheck)
                 logger.warn(
-                  `🚫 [Stream] Rate limit detected by error message for Claude Console account ${accountId} (status: ${response.status}), upstream message: ${upstreamErrorMessage}`
+                  `🚫 [Stream] Rate limit detected by error message for Claude Console account ${accountId} (status: ${response.status}), upstream message: ${upstreamErrorMessage}${autoProtectionDisabled ? ' (auto-protection disabled, skipping status change)' : ''}`
                 )
-                await claudeConsoleAccountService.markAccountRateLimited(
-                  accountId,
-                  upstreamErrorMessage
-                )
+                if (!autoProtectionDisabled) {
+                  await claudeConsoleAccountService.markAccountRateLimited(
+                    accountId,
+                    upstreamErrorMessage
+                  )
+                }
               }
 
               // 设置响应头
@@ -1172,55 +1210,11 @@ class ClaudeConsoleRelayService {
     }
   }
 
-  // 🧪 测试账号连接（供Admin API使用，独立处理以确保错误时也返回SSE格式）
+  // 🧪 测试账号连接（供Admin API使用）
   async testAccountConnection(accountId, responseStream) {
-    const testRequestBody = {
-      model: 'claude-sonnet-4-5-20250929',
-      max_tokens: 32000,
-      stream: true,
-      messages: [
-        {
-          role: 'user',
-          content: 'hi'
-        }
-      ],
-      system: [
-        {
-          type: 'text',
-          text: "You are Claude Code, Anthropic's official CLI for Claude."
-        }
-      ]
-    }
-
-    // 辅助函数：发送 SSE 事件
-    const sendSSEEvent = (type, data) => {
-      if (!responseStream.destroyed && !responseStream.writableEnded) {
-        try {
-          responseStream.write(`data: ${JSON.stringify({ type, ...data })}\n\n`)
-        } catch {
-          // 忽略写入错误
-        }
-      }
-    }
-
-    // 辅助函数：结束测试并关闭流
-    const endTest = (success, error = null) => {
-      if (!responseStream.destroyed && !responseStream.writableEnded) {
-        try {
-          if (success) {
-            sendSSEEvent('test_complete', { success: true })
-          } else {
-            sendSSEEvent('test_complete', { success: false, error: error || '测试失败' })
-          }
-          responseStream.end()
-        } catch {
-          // 忽略写入错误
-        }
-      }
-    }
+    const { sendStreamTestRequest } = require('../utils/testPayloadHelper')
 
     try {
-      // 获取账户信息
       const account = await claudeConsoleAccountService.getAccount(accountId)
       if (!account) {
         throw new Error('Account not found')
@@ -1228,178 +1222,32 @@ class ClaudeConsoleRelayService {
 
       logger.info(`🧪 Testing Claude Console account connection: ${account.name} (${accountId})`)
 
-      // 创建代理agent
-      const proxyAgent = claudeConsoleAccountService._createProxyAgent(account.proxy)
-
-      // 设置响应头
-      if (!responseStream.headersSent) {
-        responseStream.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          Connection: 'keep-alive',
-          'X-Accel-Buffering': 'no'
-        })
-      }
-
-      // 发送测试开始事件
-      sendSSEEvent('test_start', {})
-
-      // 构建完整的API URL
       const cleanUrl = account.apiUrl.replace(/\/$/, '')
-      const apiEndpoint = cleanUrl.endsWith('/v1/messages') ? cleanUrl : `${cleanUrl}/v1/messages`
+      const apiUrl = cleanUrl.endsWith('/v1/messages')
+        ? cleanUrl
+        : `${cleanUrl}/v1/messages?beta=true`
 
-      // 决定使用的 User-Agent
-      const userAgent = account.userAgent || this.defaultUserAgent
-
-      // 准备请求配置
-      const requestConfig = {
-        method: 'POST',
-        url: apiEndpoint,
-        data: testRequestBody,
-        headers: {
-          'Content-Type': 'application/json',
-          'anthropic-version': '2023-06-01',
-          'User-Agent': userAgent
-        },
-        timeout: 30000, // 测试请求使用较短超时
-        responseType: 'stream',
-        validateStatus: () => true
-      }
-
-      if (proxyAgent) {
-        requestConfig.httpAgent = proxyAgent
-        requestConfig.httpsAgent = proxyAgent
-        requestConfig.proxy = false
-      }
-
-      // 设置认证方式
-      if (account.apiKey && account.apiKey.startsWith('sk-ant-')) {
-        requestConfig.headers['x-api-key'] = account.apiKey
-      } else {
-        requestConfig.headers['Authorization'] = `Bearer ${account.apiKey}`
-      }
-
-      // 发送请求
-      const response = await axios(requestConfig)
-
-      logger.debug(`🌊 Claude Console test response status: ${response.status}`)
-
-      // 处理非200响应
-      if (response.status !== 200) {
-        logger.error(
-          `❌ Claude Console API returned error status: ${response.status} | Account: ${account?.name || accountId}`
-        )
-
-        // 收集错误响应数据
-        return new Promise((resolve) => {
-          const errorChunks = []
-
-          response.data.on('data', (chunk) => {
-            errorChunks.push(chunk)
-          })
-
-          response.data.on('end', () => {
-            try {
-              const fullErrorData = Buffer.concat(errorChunks).toString()
-              logger.error(
-                `📝 [Test] Upstream error response from ${account?.name || accountId}: ${fullErrorData.substring(0, 500)}`
-              )
-
-              // 尝试解析错误信息
-              let errorMessage = `API Error: ${response.status}`
-              try {
-                const errorJson = JSON.parse(fullErrorData)
-                // 直接提取所有可能的错误信息字段
-                errorMessage =
-                  errorJson.message ||
-                  errorJson.error?.message ||
-                  errorJson.statusMessage ||
-                  errorJson.error ||
-                  (typeof errorJson === 'string' ? errorJson : JSON.stringify(errorJson))
-              } catch {
-                errorMessage = fullErrorData.substring(0, 200) || `API Error: ${response.status}`
-              }
-
-              endTest(false, errorMessage)
-              resolve()
-            } catch {
-              endTest(false, `API Error: ${response.status}`)
-              resolve()
-            }
-          })
-
-          response.data.on('error', (err) => {
-            endTest(false, err.message || '流读取错误')
-            resolve()
-          })
-        })
-      }
-
-      // 处理成功的流式响应
-      return new Promise((resolve) => {
-        let buffer = ''
-
-        response.data.on('data', (chunk) => {
-          try {
-            buffer += chunk.toString()
-            const lines = buffer.split('\n')
-            buffer = lines.pop() || ''
-
-            for (const line of lines) {
-              if (!line.startsWith('data: ')) {
-                continue
-              }
-
-              const jsonStr = line.substring(6).trim()
-              if (!jsonStr || jsonStr === '[DONE]') {
-                continue
-              }
-
-              try {
-                const data = JSON.parse(jsonStr)
-
-                // 转换 content_block_delta 为 content
-                if (data.type === 'content_block_delta' && data.delta && data.delta.text) {
-                  sendSSEEvent('content', { text: data.delta.text })
-                }
-
-                // 处理消息完成
-                if (data.type === 'message_stop') {
-                  endTest(true)
-                }
-
-                // 处理错误事件
-                if (data.type === 'error') {
-                  const errorMsg = data.error?.message || data.message || '未知错误'
-                  endTest(false, errorMsg)
-                }
-              } catch {
-                // 忽略解析错误
-              }
-            }
-          } catch {
-            // 忽略处理错误
-          }
-        })
-
-        response.data.on('end', () => {
-          logger.info(`✅ Test request completed for account: ${account.name}`)
-          // 如果还没结束，发送完成事件
-          if (!responseStream.destroyed && !responseStream.writableEnded) {
-            endTest(true)
-          }
-          resolve()
-        })
-
-        response.data.on('error', (err) => {
-          logger.error(`❌ Test stream error:`, err)
-          endTest(false, err.message || '流处理错误')
-          resolve()
-        })
+      await sendStreamTestRequest({
+        apiUrl,
+        authorization: `Bearer ${account.apiKey}`,
+        responseStream,
+        proxyAgent: claudeConsoleAccountService._createProxyAgent(account.proxy),
+        extraHeaders: account.userAgent ? { 'User-Agent': account.userAgent } : {}
       })
     } catch (error) {
       logger.error(`❌ Test account connection failed:`, error)
-      endTest(false, error.message || '测试失败')
+      if (!responseStream.headersSent) {
+        responseStream.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache'
+        })
+      }
+      if (!responseStream.destroyed && !responseStream.writableEnded) {
+        responseStream.write(
+          `data: ${JSON.stringify({ type: 'test_complete', success: false, error: error.message })}\n\n`
+        )
+        responseStream.end()
+      }
     }
   }
 
