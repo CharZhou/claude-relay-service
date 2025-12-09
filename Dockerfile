@@ -1,5 +1,5 @@
 # 🎯 后端依赖阶段 (与前端构建并行)
-FROM node:18-alpine AS backend-deps
+FROM harbor.tegical.world/docker.io/node:18-alpine AS backend-deps
 
 # 📁 设置工作目录
 WORKDIR /app
@@ -12,7 +12,7 @@ RUN --mount=type=cache,target=/root/.npm \
     npm ci --only=production
 
 # 🎯 前端构建阶段 (与后端依赖并行)
-FROM node:18-alpine AS frontend-builder
+FROM harbor.tegical.world/docker.io/node:18-alpine AS frontend-builder
 
 # 📁 设置工作目录
 WORKDIR /app/web/admin-spa
@@ -31,7 +31,7 @@ COPY web/admin-spa/ ./
 RUN npm run build
 
 # 🐳 主应用阶段
-FROM node:18-alpine
+FROM harbor.tegical.world/docker.io/node:18-alpine
 
 # 📋 设置标签
 LABEL maintainer="claude-relay-service@example.com"

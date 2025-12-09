@@ -196,9 +196,8 @@ test-results/
 coverage/
 .nyc_output/
 
-# Documentation build
-docs/build/
-docs/dist/
+# Documentation
+docs/
 
 # Deployment files
 deploy/
