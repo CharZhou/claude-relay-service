@@ -37,6 +37,9 @@ services:
       - HTTPS_KEY_PATH=${HTTPS_KEY_PATH:-/app/certs/key.pem}
       - HTTPS_REDIRECT_HTTP=${HTTPS_REDIRECT_HTTP:-true}
 
+      # 🔧 请求体大小配置
+      - REQUEST_MAX_SIZE_MB=60
+
       # 🔐 安全配置（必填）
       - JWT_SECRET=${JWT_SECRET}  # 必填：至少32字符的随机字符串
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}  # 必填：32字符的加密密钥
