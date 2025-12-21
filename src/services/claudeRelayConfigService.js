@@ -17,8 +17,18 @@ const DEFAULT_CONFIG = {
   sessionBindingTtlDays: 30, // 会话绑定 TTL（天），默认30天
   // 用户消息队列配置
   userMessageQueueEnabled: false, // 是否启用用户消息队列（默认关闭）
-  userMessageQueueDelayMs: 100, // 请求间隔（毫秒）
-  userMessageQueueTimeoutMs: 60000, // 队列超时（毫秒）
+  userMessageQueueDelayMs: 200, // 请求间隔（毫秒）
+  userMessageQueueTimeoutMs: 5000, // 队列等待超时（毫秒），优化后锁持有时间短无需长等待
+  userMessageQueueLockTtlMs: 5000, // 锁TTL（毫秒），请求发送后立即释放无需长TTL
+  // 并发请求排队配置
+  concurrentRequestQueueEnabled: false, // 是否启用并发请求排队（默认关闭）
+  concurrentRequestQueueMaxSize: 3, // 固定最小排队数（默认3）
+  concurrentRequestQueueMaxSizeMultiplier: 0, // 并发数的倍数（默认0，仅使用固定值）
+  concurrentRequestQueueTimeoutMs: 10000, // 排队超时（毫秒，默认10秒）
+  concurrentRequestQueueMaxRedisFailCount: 5, // 连续 Redis 失败阈值（默认5次）
+  // 排队健康检查配置
+  concurrentRequestQueueHealthCheckEnabled: true, // 是否启用排队健康检查（默认开启）
+  concurrentRequestQueueHealthThreshold: 0.8, // 健康检查阈值（P90 >= 超时 × 阈值时拒绝新请求）
   updatedAt: null,
   updatedBy: null
 }
@@ -104,7 +114,8 @@ class ClaudeRelayConfigService {
 
       logger.info(`✅ Claude relay config updated by ${updatedBy}:`, {
         claudeCodeOnlyEnabled: updatedConfig.claudeCodeOnlyEnabled,
-        globalSessionBindingEnabled: updatedConfig.globalSessionBindingEnabled
+        globalSessionBindingEnabled: updatedConfig.globalSessionBindingEnabled,
+        concurrentRequestQueueEnabled: updatedConfig.concurrentRequestQueueEnabled
       })
 
       return updatedConfig
@@ -320,11 +331,11 @@ class ClaudeRelayConfigService {
 
   /**
    * 验证新会话请求
-   * @param {Object} requestBody - 请求体
+   * @param {Object} _requestBody - 请求体（预留参数，当前未使用）
    * @param {string} originalSessionId - 原始会话ID
    * @returns {Promise<Object>} { valid: boolean, error?: string, binding?: object, isNewSession?: boolean }
    */
-  async validateNewSession(requestBody, originalSessionId) {
+  async validateNewSession(_requestBody, originalSessionId) {
     const cfg = await this.getConfig()
 
     if (!cfg.globalSessionBindingEnabled) {

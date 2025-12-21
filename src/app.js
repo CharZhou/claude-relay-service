@@ -664,6 +664,20 @@ class Application {
 
         // 使用 Lua 脚本批量清理所有过期项
         for (const key of keys) {
+          // 跳过非 Sorted Set 类型的键（这些键有各自的清理逻辑）
+          // - concurrency:queue:stats:* 是 Hash 类型
+          // - concurrency:queue:wait_times:* 是 List 类型
+          // - concurrency:queue:* (不含stats/wait_times) 是 String 类型
+          if (
+            key.startsWith('concurrency:queue:stats:') ||
+            key.startsWith('concurrency:queue:wait_times:') ||
+            (key.startsWith('concurrency:queue:') &&
+              !key.includes(':stats:') &&
+              !key.includes(':wait_times:'))
+          ) {
+            continue
+          }
+
           try {
             const cleaned = await redis.client.eval(
               `
@@ -713,6 +727,33 @@ class Application {
       // 然后启动定时清理任务
       userMessageQueueService.startCleanupTask()
     })
+
+    // 🚦 清理服务重启后残留的并发排队计数器
+    // 多实例部署时建议关闭此开关，避免新实例启动时清空其他实例的队列计数
+    // 可通过 DELETE /admin/concurrency/queue 接口手动清理
+    const clearQueuesOnStartup = process.env.CLEAR_CONCURRENCY_QUEUES_ON_STARTUP !== 'false'
+    if (clearQueuesOnStartup) {
+      redis.clearAllConcurrencyQueues().catch((error) => {
+        logger.error('❌ Error clearing concurrency queues on startup:', error)
+      })
+    } else {
+      logger.info(
+        '🚦 Skipping concurrency queue cleanup on startup (CLEAR_CONCURRENCY_QUEUES_ON_STARTUP=false)'
+      )
+    }
+
+    // 🧪 启动账户定时测试调度器
+    // 根据配置定期测试账户连通性并保存测试历史
+    const accountTestSchedulerEnabled =
+      process.env.ACCOUNT_TEST_SCHEDULER_ENABLED !== 'false' &&
+      config.accountTestScheduler?.enabled !== false
+    if (accountTestSchedulerEnabled) {
+      const accountTestSchedulerService = require('./services/accountTestSchedulerService')
+      accountTestSchedulerService.start()
+      logger.info('🧪 Account test scheduler service started')
+    } else {
+      logger.info('🧪 Account test scheduler service disabled')
+    }
   }
 
   setupGracefulShutdown() {
@@ -781,6 +822,15 @@ class Application {
           logger.info('📊 Cost rank service stopped')
         } catch (error) {
           logger.error('❌ Error stopping cost rank service:', error)
+        }
+
+        // 停止账户定时测试调度器
+        try {
+          const accountTestSchedulerService = require('./services/accountTestSchedulerService')
+          accountTestSchedulerService.stop()
+          logger.info('🧪 Account test scheduler service stopped')
+        } catch (error) {
+          logger.error('❌ Error stopping account test scheduler service:', error)
         }
 
         try {

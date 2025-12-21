@@ -14,9 +14,6 @@ const logger = require('../utils/logger')
 // 清理任务间隔
 const CLEANUP_INTERVAL_MS = 60000 // 1分钟
 
-// 锁续租最大持续时间（从配置读取，与 REQUEST_TIMEOUT 保持一致）
-const MAX_RENEWAL_DURATION_MS = config.requestTimeout || 10 * 60 * 1000
-
 // 轮询等待配置
 const POLL_INTERVAL_BASE_MS = 50 // 基础轮询间隔
 const POLL_INTERVAL_MAX_MS = 500 // 最大轮询间隔
@@ -25,8 +22,6 @@ const POLL_BACKOFF_FACTOR = 1.5 // 退避因子
 class UserMessageQueueService {
   constructor() {
     this.cleanupTimer = null
-    // 跟踪活跃的续租定时器，用于服务关闭时清理
-    this.activeRenewalTimers = new Map()
   }
 
   /**
@@ -74,12 +69,13 @@ class UserMessageQueueService {
    */
   async getConfig() {
     // 默认配置（防止 config.userMessageQueue 未定义）
+    // 注意：优化后的默认值 - 锁持有时间从分钟级降到毫秒级，无需长等待
     const queueConfig = config.userMessageQueue || {}
     const defaults = {
       enabled: queueConfig.enabled ?? false,
-      delayMs: queueConfig.delayMs ?? 100,
-      timeoutMs: queueConfig.timeoutMs ?? 60000,
-      lockTtlMs: queueConfig.lockTtlMs ?? 120000
+      delayMs: queueConfig.delayMs ?? 200,
+      timeoutMs: queueConfig.timeoutMs ?? 5000, // 从 60000 降到 5000，因为锁持有时间短
+      lockTtlMs: queueConfig.lockTtlMs ?? 5000 // 从 120000 降到 5000，5秒足以覆盖请求发送
     }
 
     // 尝试从 claudeRelayConfigService 获取 Web 界面配置
@@ -100,7 +96,10 @@ class UserMessageQueueService {
           webConfig.userMessageQueueTimeoutMs !== undefined
             ? webConfig.userMessageQueueTimeoutMs
             : defaults.timeoutMs,
-        lockTtlMs: defaults.lockTtlMs
+        lockTtlMs:
+          webConfig.userMessageQueueLockTtlMs !== undefined
+            ? webConfig.userMessageQueueLockTtlMs
+            : defaults.lockTtlMs
       }
     } catch {
       // 回退到环境变量配置
@@ -122,12 +121,23 @@ class UserMessageQueueService {
    * @param {string} accountId - 账户ID
    * @param {string} requestId - 请求ID（可选，会自动生成）
    * @param {number} timeoutMs - 超时时间（可选，使用配置默认值）
+   * @param {Object} accountConfig - 账户级配置（可选），优先级高于全局配置
+   * @param {number} accountConfig.maxConcurrency - 账户级串行队列开关：>0启用，=0使用全局配置
    * @returns {Promise<{acquired: boolean, requestId: string, error?: string}>}
    */
-  async acquireQueueLock(accountId, requestId = null, timeoutMs = null) {
+  async acquireQueueLock(accountId, requestId = null, timeoutMs = null, accountConfig = null) {
     const cfg = await this.getConfig()
 
-    if (!cfg.enabled) {
+    // 账户级配置优先：maxConcurrency > 0 时强制启用，忽略全局开关
+    let queueEnabled = cfg.enabled
+    if (accountConfig && accountConfig.maxConcurrency > 0) {
+      queueEnabled = true
+      logger.debug(
+        `📬 User message queue: account-level queue enabled for account ${accountId} (maxConcurrency=${accountConfig.maxConcurrency})`
+      )
+    }
+
+    if (!queueEnabled) {
       return { acquired: true, requestId: requestId || uuidv4(), skipped: true }
     }
 
@@ -233,83 +243,6 @@ class UserMessageQueueService {
   }
 
   /**
-   * 启动锁续租（防止长连接超过TTL导致锁丢失）
-   * @param {string} accountId - 账户ID
-   * @param {string} requestId - 请求ID
-   * @returns {Promise<Function>} 停止续租的函数
-   */
-  async startLockRenewal(accountId, requestId) {
-    const cfg = await this.getConfig()
-    if (!cfg.enabled || !accountId || !requestId) {
-      return () => {}
-    }
-
-    const intervalMs = Math.max(10000, Math.floor(cfg.lockTtlMs / 2)) // 约一半TTL刷新一次
-    const maxRenewals = Math.ceil(MAX_RENEWAL_DURATION_MS / intervalMs) // 最大续租次数
-    const startTime = Date.now()
-    const timerKey = `${accountId}:${requestId}`
-
-    let stopped = false
-    let renewalCount = 0
-
-    const stopRenewal = () => {
-      if (!stopped) {
-        clearInterval(timer)
-        stopped = true
-        this.activeRenewalTimers.delete(timerKey)
-      }
-    }
-
-    const timer = setInterval(async () => {
-      if (stopped) {
-        return
-      }
-
-      renewalCount++
-
-      // 检查是否超过最大续租次数或最大持续时间
-      if (renewalCount > maxRenewals || Date.now() - startTime > MAX_RENEWAL_DURATION_MS) {
-        logger.warn(`📬 User message queue: max renewal duration exceeded, stopping renewal`, {
-          accountId,
-          requestId,
-          renewalCount,
-          durationMs: Date.now() - startTime
-        })
-        stopRenewal()
-        return
-      }
-
-      try {
-        const refreshed = await redis.refreshUserMessageLock(accountId, requestId, cfg.lockTtlMs)
-        if (!refreshed) {
-          // 锁可能已被释放或超时，停止续租
-          logger.warn(
-            `📬 User message queue: failed to refresh lock (possibly lost), stop renewal`,
-            {
-              accountId,
-              requestId,
-              renewalCount
-            }
-          )
-          stopRenewal()
-        }
-      } catch (error) {
-        logger.error('📬 User message queue: lock renewal error:', error)
-      }
-    }, intervalMs)
-
-    // 避免阻止进程退出
-    if (typeof timer.unref === 'function') {
-      timer.unref()
-    }
-
-    // 跟踪活跃的定时器
-    this.activeRenewalTimers.set(timerKey, { timer, stopRenewal, accountId, requestId, startTime })
-
-    return stopRenewal
-  }
-
-  /**
    * 获取队列统计信息
    * @param {string} accountId - 账户ID
    * @returns {Promise<Object>}
@@ -383,32 +316,6 @@ class UserMessageQueueService {
       this.cleanupTimer = null
       logger.info('📬 User message queue: cleanup task stopped')
     }
-  }
-
-  /**
-   * 停止所有活跃的锁续租定时器（服务关闭时调用）
-   */
-  stopAllRenewalTimers() {
-    const count = this.activeRenewalTimers.size
-    if (count > 0) {
-      for (const [key, { stopRenewal }] of this.activeRenewalTimers) {
-        try {
-          stopRenewal()
-        } catch (error) {
-          logger.error(`📬 User message queue: failed to stop renewal timer ${key}:`, error)
-        }
-      }
-      this.activeRenewalTimers.clear()
-      logger.info(`📬 User message queue: stopped ${count} active renewal timer(s)`)
-    }
-  }
-
-  /**
-   * 获取活跃续租定时器数量（用于监控）
-   * @returns {number}
-   */
-  getActiveRenewalCount() {
-    return this.activeRenewalTimers.size
   }
 
   /**

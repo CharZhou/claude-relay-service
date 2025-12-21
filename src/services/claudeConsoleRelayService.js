@@ -12,6 +12,8 @@ const {
 } = require('../utils/errorSanitizer')
 const { isRateLimitError } = require('../utils/rateLimitHelper')
 const userMessageQueueService = require('./userMessageQueueService')
+const { isStreamWritable } = require('../utils/streamHelper')
+const { filterForClaude } = require('../utils/headerFilter')
 
 class ClaudeConsoleRelayService {
   constructor() {
@@ -68,7 +70,6 @@ class ClaudeConsoleRelayService {
     let concurrencyAcquired = false
     let queueLockAcquired = false
     let queueRequestId = null
-    let queueLockRenewalStopper = null
 
     try {
       // 📬 用户消息队列处理：如果是用户消息请求，需要获取队列锁
@@ -123,10 +124,6 @@ class ClaudeConsoleRelayService {
         if (queueResult.acquired && !queueResult.skipped) {
           queueLockAcquired = true
           queueRequestId = queueResult.requestId
-          queueLockRenewalStopper = await userMessageQueueService.startLockRenewal(
-            accountId,
-            queueRequestId
-          )
           logger.debug(
             `📬 User message queue lock acquired for console account ${accountId}, requestId: ${queueRequestId}`
           )
@@ -308,6 +305,23 @@ class ClaudeConsoleRelayService {
       )
       const response = await axios(requestConfig)
 
+      // 📬 请求已发送成功，立即释放队列锁（无需等待响应处理完成）
+      // 因为 Claude API 限流基于请求发送时刻计算（RPM），不是请求完成时刻
+      if (queueLockAcquired && queueRequestId && accountId) {
+        try {
+          await userMessageQueueService.releaseQueueLock(accountId, queueRequestId)
+          queueLockAcquired = false // 标记已释放，防止 finally 重复释放
+          logger.debug(
+            `📬 User message queue lock released early for console account ${accountId}, requestId: ${queueRequestId}`
+          )
+        } catch (releaseError) {
+          logger.error(
+            `❌ Failed to release user message queue lock early for console account ${accountId}:`,
+            releaseError.message
+          )
+        }
+      }
+
       // 移除监听器（请求成功完成）
       if (clientRequest) {
         clientRequest.removeListener('close', handleClientDisconnect)
@@ -481,13 +495,13 @@ class ClaudeConsoleRelayService {
         }
       }
 
-      // 📬 释放用户消息队列锁
+      // 📬 释放用户消息队列锁（兜底，正常情况下已在请求发送后提前释放）
       if (queueLockAcquired && queueRequestId && accountId) {
         try {
-          if (queueLockRenewalStopper) {
-            queueLockRenewalStopper()
-          }
           await userMessageQueueService.releaseQueueLock(accountId, queueRequestId)
+          logger.debug(
+            `📬 User message queue lock released in finally for console account ${accountId}, requestId: ${queueRequestId}`
+          )
         } catch (releaseError) {
           logger.error(
             `❌ Failed to release user message queue lock for account ${accountId}:`,
@@ -515,7 +529,6 @@ class ClaudeConsoleRelayService {
     let leaseRefreshInterval = null // 租约刷新定时器
     let queueLockAcquired = false
     let queueRequestId = null
-    let queueLockRenewalStopper = null
 
     try {
       // 📬 用户消息队列处理：如果是用户消息请求，需要获取队列锁
@@ -554,10 +567,13 @@ class ClaudeConsoleRelayService {
             isBackendError ? { backendError: queueResult.errorMessage } : {}
           )
           if (!responseStream.headersSent) {
+            const existingConnection = responseStream.getHeader
+              ? responseStream.getHeader('Connection')
+              : null
             responseStream.writeHead(statusCode, {
               'Content-Type': 'text/event-stream',
               'Cache-Control': 'no-cache',
-              Connection: 'keep-alive',
+              Connection: existingConnection || 'keep-alive',
               'x-user-message-queue-error': errorType
             })
           }
@@ -570,10 +586,6 @@ class ClaudeConsoleRelayService {
         if (queueResult.acquired && !queueResult.skipped) {
           queueLockAcquired = true
           queueRequestId = queueResult.requestId
-          queueLockRenewalStopper = await userMessageQueueService.startLockRenewal(
-            accountId,
-            queueRequestId
-          )
           logger.debug(
             `📬 User message queue lock acquired for console account ${accountId} (stream), requestId: ${queueRequestId}`
           )
@@ -680,16 +692,40 @@ class ClaudeConsoleRelayService {
         accountId,
         usageCallback,
         streamTransformer,
-        options
+        options,
+        // 📬 回调：在收到响应头时释放队列锁
+        async () => {
+          if (queueLockAcquired && queueRequestId && accountId) {
+            try {
+              await userMessageQueueService.releaseQueueLock(accountId, queueRequestId)
+              queueLockAcquired = false // 标记已释放，防止 finally 重复释放
+              logger.debug(
+                `📬 User message queue lock released early for console stream account ${accountId}, requestId: ${queueRequestId}`
+              )
+            } catch (releaseError) {
+              logger.error(
+                `❌ Failed to release user message queue lock early for console stream account ${accountId}:`,
+                releaseError.message
+              )
+            }
+          }
+        }
       )
 
       // 更新最后使用时间
       await this._updateLastUsedTime(accountId)
     } catch (error) {
-      logger.error(
-        `❌ Claude Console stream relay failed (Account: ${account?.name || accountId}):`,
-        error
-      )
+      // 客户端主动断开连接是正常情况，使用 INFO 级别
+      if (error.message === 'Client disconnected') {
+        logger.info(
+          `🔌 Claude Console stream relay ended: Client disconnected (Account: ${account?.name || accountId})`
+        )
+      } else {
+        logger.error(
+          `❌ Claude Console stream relay failed (Account: ${account?.name || accountId}):`,
+          error
+        )
+      }
       throw error
     } finally {
       // 🛑 清理租约刷新定时器
@@ -715,13 +751,13 @@ class ClaudeConsoleRelayService {
         }
       }
 
-      // 📬 释放用户消息队列锁
+      // 📬 释放用户消息队列锁（兜底，正常情况下已在收到响应头后提前释放）
       if (queueLockAcquired && queueRequestId && accountId) {
         try {
-          if (queueLockRenewalStopper) {
-            queueLockRenewalStopper()
-          }
           await userMessageQueueService.releaseQueueLock(accountId, queueRequestId)
+          logger.debug(
+            `📬 User message queue lock released in finally for console stream account ${accountId}, requestId: ${queueRequestId}`
+          )
         } catch (releaseError) {
           logger.error(
             `❌ Failed to release user message queue lock for stream account ${accountId}:`,
@@ -742,7 +778,8 @@ class ClaudeConsoleRelayService {
     accountId,
     usageCallback,
     streamTransformer = null,
-    requestOptions = {}
+    requestOptions = {},
+    onResponseHeaderReceived = null
   ) {
     return new Promise((resolve, reject) => {
       let aborted = false
@@ -805,8 +842,11 @@ class ClaudeConsoleRelayService {
       // 发送请求
       const request = axios(requestConfig)
 
+      // 注意：使用 .then(async ...) 模式处理响应
+      // - 内部的 releaseQueueLock 有独立的 try-catch，不会导致未捕获异常
+      // - queueLockAcquired = false 的赋值会在 finally 执行前完成（JS 单线程保证）
       request
-        .then((response) => {
+        .then(async (response) => {
           logger.debug(`🌊 Claude Console Claude stream response status: ${response.status}`)
 
           // 错误响应处理
@@ -906,7 +946,7 @@ class ClaudeConsoleRelayService {
                   `🧹 [Stream] [SANITIZED] Error response to client: ${JSON.stringify(sanitizedError)}`
                 )
 
-                if (!responseStream.destroyed) {
+                if (isStreamWritable(responseStream)) {
                   responseStream.write(JSON.stringify(sanitizedError))
                   responseStream.end()
                 }
@@ -914,7 +954,7 @@ class ClaudeConsoleRelayService {
                 const sanitizedText = sanitizeErrorMessage(errorDataForCheck)
                 logger.error(`🧹 [Stream] [SANITIZED] Error response to client: ${sanitizedText}`)
 
-                if (!responseStream.destroyed) {
+                if (isStreamWritable(responseStream)) {
                   responseStream.write(sanitizedText)
                   responseStream.end()
                 }
@@ -923,6 +963,19 @@ class ClaudeConsoleRelayService {
             })
 
             return
+          }
+
+          // 📬 收到成功响应头（HTTP 200），调用回调释放队列锁
+          // 此时请求已被 Claude API 接受并计入 RPM 配额，无需等待响应完成
+          if (onResponseHeaderReceived && typeof onResponseHeaderReceived === 'function') {
+            try {
+              await onResponseHeaderReceived()
+            } catch (callbackError) {
+              logger.error(
+                `❌ Failed to execute onResponseHeaderReceived callback for console stream account ${accountId}:`,
+                callbackError.message
+              )
+            }
           }
 
           // 成功响应，检查并移除错误状态
@@ -938,11 +991,22 @@ class ClaudeConsoleRelayService {
           })
 
           // 设置响应头
+          // ⚠️ 关键修复：尊重 auth.js 提前设置的 Connection: close
+          // 当并发队列功能启用时，auth.js 会设置 Connection: close 来禁用 Keep-Alive
           if (!responseStream.headersSent) {
+            const existingConnection = responseStream.getHeader
+              ? responseStream.getHeader('Connection')
+              : null
+            const connectionHeader = existingConnection || 'keep-alive'
+            if (existingConnection) {
+              logger.debug(
+                `🔌 [Console Stream] Preserving existing Connection header: ${existingConnection}`
+              )
+            }
             responseStream.writeHead(200, {
               'Content-Type': 'text/event-stream',
               'Cache-Control': 'no-cache',
-              Connection: 'keep-alive',
+              Connection: connectionHeader,
               'X-Accel-Buffering': 'no'
             })
           }
@@ -968,20 +1032,33 @@ class ClaudeConsoleRelayService {
               buffer = lines.pop() || ''
 
               // 转发数据并解析usage
-              if (lines.length > 0 && !responseStream.destroyed) {
-                const linesToForward = lines.join('\n') + (lines.length > 0 ? '\n' : '')
+              if (lines.length > 0) {
+                // 检查流是否可写（客户端连接是否有效）
+                if (isStreamWritable(responseStream)) {
+                  const linesToForward = lines.join('\n') + (lines.length > 0 ? '\n' : '')
 
-                // 应用流转换器如果有
-                if (streamTransformer) {
-                  const transformed = streamTransformer(linesToForward)
-                  if (transformed) {
-                    responseStream.write(transformed)
+                  // 应用流转换器如果有
+                  let dataToWrite = linesToForward
+                  if (streamTransformer) {
+                    const transformed = streamTransformer(linesToForward)
+                    if (transformed) {
+                      dataToWrite = transformed
+                    } else {
+                      dataToWrite = null
+                    }
+                  }
+
+                  if (dataToWrite) {
+                    responseStream.write(dataToWrite)
                   }
                 } else {
-                  responseStream.write(linesToForward)
+                  // 客户端连接已断开，记录警告（但仍继续解析usage）
+                  logger.warn(
+                    `⚠️ [Console] Client disconnected during stream, skipping ${lines.length} lines for account: ${account?.name || accountId}`
+                  )
                 }
 
-                // 解析SSE数据寻找usage信息
+                // 解析SSE数据寻找usage信息（无论连接状态如何）
                 for (const line of lines) {
                   if (line.startsWith('data:')) {
                     const jsonStr = line.slice(5).trimStart()
@@ -1089,7 +1166,7 @@ class ClaudeConsoleRelayService {
                 `❌ Error processing Claude Console stream data (Account: ${account?.name || accountId}):`,
                 error
               )
-              if (!responseStream.destroyed) {
+              if (isStreamWritable(responseStream)) {
                 // 如果有 streamTransformer（如测试请求），使用前端期望的格式
                 if (streamTransformer) {
                   responseStream.write(
@@ -1112,7 +1189,7 @@ class ClaudeConsoleRelayService {
           response.data.on('end', () => {
             try {
               // 处理缓冲区中剩余的数据
-              if (buffer.trim() && !responseStream.destroyed) {
+              if (buffer.trim() && isStreamWritable(responseStream)) {
                 if (streamTransformer) {
                   const transformed = streamTransformer(buffer)
                   if (transformed) {
@@ -1161,12 +1238,33 @@ class ClaudeConsoleRelayService {
               }
 
               // 确保流正确结束
-              if (!responseStream.destroyed) {
-                responseStream.end()
-              }
+              if (isStreamWritable(responseStream)) {
+                // 📊 诊断日志：流结束前状态
+                logger.info(
+                  `📤 [STREAM] Ending response | destroyed: ${responseStream.destroyed}, ` +
+                    `socketDestroyed: ${responseStream.socket?.destroyed}, ` +
+                    `socketBytesWritten: ${responseStream.socket?.bytesWritten || 0}`
+                )
 
-              logger.debug('🌊 Claude Console Claude stream response completed')
-              resolve()
+                // 禁用 Nagle 算法确保数据立即发送
+                if (responseStream.socket && !responseStream.socket.destroyed) {
+                  responseStream.socket.setNoDelay(true)
+                }
+
+                // 等待数据完全 flush 到客户端后再 resolve
+                responseStream.end(() => {
+                  logger.info(
+                    `✅ [STREAM] Response ended and flushed | socketBytesWritten: ${responseStream.socket?.bytesWritten || 'unknown'}`
+                  )
+                  resolve()
+                })
+              } else {
+                // 连接已断开，记录警告
+                logger.warn(
+                  `⚠️ [Console] Client disconnected before stream end, data may not have been received | account: ${account?.name || accountId}`
+                )
+                resolve()
+              }
             } catch (error) {
               logger.error('❌ Error processing stream end:', error)
               reject(error)
@@ -1178,7 +1276,7 @@ class ClaudeConsoleRelayService {
               `❌ Claude Console stream error (Account: ${account?.name || accountId}):`,
               error
             )
-            if (!responseStream.destroyed) {
+            if (isStreamWritable(responseStream)) {
               // 如果有 streamTransformer（如测试请求），使用前端期望的格式
               if (streamTransformer) {
                 responseStream.write(
@@ -1226,14 +1324,17 @@ class ClaudeConsoleRelayService {
 
           // 发送错误响应
           if (!responseStream.headersSent) {
+            const existingConnection = responseStream.getHeader
+              ? responseStream.getHeader('Connection')
+              : null
             responseStream.writeHead(error.response?.status || 500, {
               'Content-Type': 'text/event-stream',
               'Cache-Control': 'no-cache',
-              Connection: 'keep-alive'
+              Connection: existingConnection || 'keep-alive'
             })
           }
 
-          if (!responseStream.destroyed) {
+          if (isStreamWritable(responseStream)) {
             // 如果有 streamTransformer（如测试请求），使用前端期望的格式
             if (streamTransformer) {
               responseStream.write(
@@ -1265,30 +1366,9 @@ class ClaudeConsoleRelayService {
 
   // 🔧 过滤客户端请求头
   _filterClientHeaders(clientHeaders) {
-    const sensitiveHeaders = [
-      'content-type',
-      'user-agent',
-      'authorization',
-      'x-api-key',
-      'host',
-      'content-length',
-      'connection',
-      'proxy-authorization',
-      'content-encoding',
-      'transfer-encoding',
-      'anthropic-version'
-    ]
-
-    const filteredHeaders = {}
-
-    Object.keys(clientHeaders || {}).forEach((key) => {
-      const lowerKey = key.toLowerCase()
-      if (!sensitiveHeaders.includes(lowerKey)) {
-        filteredHeaders[key] = clientHeaders[key]
-      }
-    })
-
-    return filteredHeaders
+    // 使用统一的 headerFilter 工具类（白名单模式）
+    // 与 claudeRelayService 保持一致，避免透传 CDN headers 触发上游 API 安全检查
+    return filterForClaude(clientHeaders)
   }
 
   // 🕐 更新最后使用时间
@@ -1403,7 +1483,7 @@ class ClaudeConsoleRelayService {
           'Cache-Control': 'no-cache'
         })
       }
-      if (!responseStream.destroyed && !responseStream.writableEnded) {
+      if (isStreamWritable(responseStream)) {
         responseStream.write(
           `data: ${JSON.stringify({ type: 'test_complete', success: false, error: error.message })}\n\n`
         )
