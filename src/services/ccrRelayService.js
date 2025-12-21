@@ -645,6 +645,22 @@ class CcrRelayService {
               `❌ CCR API returned error status: ${response.status} | Account: ${account?.name || accountId}`
             )
 
+            // 设置错误响应的状态码和响应头
+            if (!responseStream.headersSent) {
+              const existingConnection = responseStream.getHeader
+                ? responseStream.getHeader('Connection')
+                : null
+              const errorHeaders = {
+                'Content-Type': response.headers['content-type'] || 'application/json',
+                'Cache-Control': 'no-cache',
+                Connection: existingConnection || 'keep-alive'
+              }
+              // 避免 Transfer-Encoding 冲突，让 Express 自动处理
+              delete errorHeaders['Transfer-Encoding']
+              delete errorHeaders['Content-Length']
+              responseStream.writeHead(response.status, errorHeaders)
+            }
+
             // 收集错误数据用于检测
             let errorDataForCheck = ''
             const errorChunks = []
@@ -652,6 +668,10 @@ class CcrRelayService {
             response.data.on('data', (chunk) => {
               errorChunks.push(chunk)
               errorDataForCheck += chunk.toString()
+              // 直接透传错误数据
+              if (isStreamWritable(responseStream)) {
+                responseStream.write(chunk)
+              }
             })
 
             response.data.on('end', async () => {
@@ -675,26 +695,7 @@ class CcrRelayService {
                 await ccrAccountService.markAccountRateLimited(accountId, upstreamErrorMessage)
               }
 
-              // 设置错误响应的状态码和响应头
-              if (!responseStream.headersSent) {
-                const existingConnection = responseStream.getHeader
-                  ? responseStream.getHeader('Connection')
-                  : null
-                const errorHeaders = {
-                  'Content-Type': response.headers['content-type'] || 'application/json',
-                  'Cache-Control': 'no-cache',
-                  Connection: existingConnection || 'keep-alive'
-                }
-                // 避免 Transfer-Encoding 冲突，让 Express 自动处理
-                delete errorHeaders['Transfer-Encoding']
-                delete errorHeaders['Content-Length']
-                responseStream.writeHead(response.status, errorHeaders)
-              }
-
-              // 发送错误数据
               if (isStreamWritable(responseStream)) {
-                const fullErrorData = Buffer.concat(errorChunks)
-                responseStream.write(fullErrorData)
                 responseStream.end()
               }
 
