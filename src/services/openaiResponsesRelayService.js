@@ -7,8 +7,11 @@ const apiKeyService = require('./apiKeyService')
 const unifiedOpenAIScheduler = require('./unifiedOpenAIScheduler')
 const config = require('../../config/config')
 const crypto = require('crypto')
-const teamMemoryService = require('./teamMemoryService')
-const { isRateLimitErrorWithStatus } = require('../utils/rateLimitHelper')
+const LRUCache = require('../utils/lruCache')
+
+// lastUsedAt 更新节流（每账户 60 秒内最多更新一次，使用 LRU 防止内存泄漏）
+const lastUsedAtThrottle = new LRUCache(1000) // 最多缓存 1000 个账户
+const LAST_USED_AT_THROTTLE_MS = 60000
 
 // 抽取缓存写入 token，兼容多种字段命名
 function extractCacheCreationTokens(usageData) {
@@ -41,125 +44,19 @@ class OpenAIResponsesRelayService {
     this.defaultTimeout = config.requestTimeout || 600000
   }
 
-  // 提取错误消息文本
-  _extractErrorMessage(body) {
-    if (!body) {
-      return ''
+  // 节流更新 lastUsedAt
+  async _throttledUpdateLastUsedAt(accountId) {
+    const now = Date.now()
+    const lastUpdate = lastUsedAtThrottle.get(accountId)
+
+    if (lastUpdate && now - lastUpdate < LAST_USED_AT_THROTTLE_MS) {
+      return // 跳过更新
     }
 
-    if (typeof body === 'string') {
-      const trimmed = body.trim()
-      if (!trimmed) {
-        return ''
-      }
-      try {
-        const parsed = JSON.parse(trimmed)
-        return this._extractErrorMessage(parsed)
-      } catch (error) {
-        return trimmed
-      }
-    }
-
-    if (typeof body === 'object') {
-      if (typeof body.error === 'string') {
-        return body.error
-      }
-      if (body.error && typeof body.error === 'object') {
-        if (typeof body.error.message === 'string') {
-          return body.error.message
-        }
-        if (typeof body.error.error === 'string') {
-          return body.error.error
-        }
-        if (typeof body.error.details === 'string') {
-          return body.error.details
-        }
-      }
-      if (typeof body.message === 'string') {
-        return body.message
-      }
-      if (typeof body.detail === 'string') {
-        return body.detail
-      }
-    }
-
-    return ''
-  }
-
-  // 抽取限流恢复时间（秒）
-  _extractResetSeconds(errorData, headers = {}) {
-    const extractNumber = (value) => {
-      if (value === undefined || value === null || value === '') {
-        return null
-      }
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        return value
-      }
-      const parsed = Number(value)
-      if (Number.isFinite(parsed)) {
-        return parsed
-      }
-      return null
-    }
-
-    let candidates = []
-
-    if (errorData && typeof errorData === 'object') {
-      const error = typeof errorData.error === 'object' ? errorData.error : errorData
-      candidates = candidates.concat([
-        extractNumber(error.resets_in_seconds),
-        extractNumber(error.resets_in),
-        extractNumber(error.retry_after_seconds),
-        extractNumber(error.retry_after)
-      ])
-    }
-
-    if (headers && typeof headers === 'object') {
-      const retryAfterHeader = headers['retry-after'] || headers['Retry-After']
-      if (retryAfterHeader) {
-        const headerSeconds = extractNumber(retryAfterHeader)
-        if (headerSeconds !== null) {
-          candidates.push(headerSeconds)
-        } else {
-          const date = Date.parse(retryAfterHeader)
-          if (!Number.isNaN(date)) {
-            const diffSeconds = Math.ceil((date - Date.now()) / 1000)
-            if (diffSeconds > 0) {
-              candidates.push(diffSeconds)
-            }
-          }
-        }
-      }
-    }
-
-    for (const candidate of candidates) {
-      if (candidate && Number.isFinite(candidate) && candidate > 0) {
-        return candidate
-      }
-    }
-
-    const fallbackSeconds = 600
-    logger.warn(
-      `⚠️ Unable to extract rate limit reset time, defaulting to ${fallbackSeconds} seconds (10 minutes)`
-    )
-    return fallbackSeconds
-  }
-
-  // 统一构建限流响应
-  _buildRateLimitResponse(message, resetsInSeconds = null) {
-    const response = {
-      error: {
-        message: message || 'Rate limit exceeded',
-        type: 'rate_limit_error',
-        code: 'rate_limit_exceeded'
-      }
-    }
-
-    if (resetsInSeconds && Number.isFinite(resetsInSeconds) && resetsInSeconds > 0) {
-      response.error.resets_in_seconds = resetsInSeconds
-    }
-
-    return response
+    lastUsedAtThrottle.set(accountId, now, LAST_USED_AT_THROTTLE_MS)
+    await openaiResponsesAccountService.updateAccount(accountId, {
+      lastUsedAt: new Date().toISOString()
+    })
   }
 
   // 处理请求转发
@@ -177,9 +74,6 @@ class OpenAIResponsesRelayService {
       if (!fullAccount) {
         throw new Error('Account not found')
       }
-
-      // 🧠 注入团队 Memory（在发送请求之前）
-      teamMemoryService.injectToOpenAIResponsesFormat(req.body)
 
       // 创建 AbortController 用于取消请求
       abortController = new AbortController()
@@ -378,39 +272,6 @@ class OpenAIResponsesRelayService {
           return res.status(401).json(unauthorizedResponse)
         }
 
-        if (isRateLimitErrorWithStatus(response.status, errorData)) {
-          const resetsInSeconds = this._extractResetSeconds(errorData, response.headers)
-          const errorMessage = this._extractErrorMessage(errorData)
-          logger.warn('⚠️ OpenAI-Responses rate limit detected from error payload', {
-            status: response.status,
-            accountId: account.id,
-            resetsInSeconds,
-            message: errorMessage
-          })
-
-          try {
-            await unifiedOpenAIScheduler.markAccountRateLimited(
-              account.id,
-              'openai-responses',
-              sessionHash,
-              resetsInSeconds
-            )
-          } catch (markError) {
-            logger.error(
-              '❌ Failed to mark OpenAI-Responses account rate limited after error detection:',
-              markError
-            )
-          }
-
-          const rateLimitedResponse = this._buildRateLimitResponse(errorMessage, resetsInSeconds)
-
-          // 清理监听器
-          req.removeListener('close', handleClientDisconnect)
-          res.removeListener('close', handleClientDisconnect)
-
-          return res.status(429).json(rateLimitedResponse)
-        }
-
         // 清理监听器
         req.removeListener('close', handleClientDisconnect)
         res.removeListener('close', handleClientDisconnect)
@@ -418,10 +279,8 @@ class OpenAIResponsesRelayService {
         return res.status(response.status).json(errorData)
       }
 
-      // 更新最后使用时间
-      await openaiResponsesAccountService.updateAccount(account.id, {
-        lastUsedAt: new Date().toISOString()
-      })
+      // 更新最后使用时间（节流）
+      await this._throttledUpdateLastUsedAt(account.id)
 
       // 处理流式响应
       if (req.body?.stream && response.data && typeof response.data.pipe === 'function') {
@@ -541,34 +400,6 @@ class OpenAIResponsesRelayService {
           }
 
           return res.status(401).json(unauthorizedResponse)
-        }
-
-        if (isRateLimitErrorWithStatus(status, errorData)) {
-          const resetsInSeconds = this._extractResetSeconds(errorData, error.response.headers)
-          const errorMessage = this._extractErrorMessage(errorData)
-          logger.warn('⚠️ OpenAI-Responses rate limit detected in axios error response', {
-            status,
-            accountId: account.id,
-            resetsInSeconds,
-            message: errorMessage
-          })
-
-          try {
-            await unifiedOpenAIScheduler.markAccountRateLimited(
-              account.id,
-              'openai-responses',
-              sessionHash,
-              resetsInSeconds
-            )
-          } catch (markError) {
-            logger.error(
-              '❌ Failed to mark OpenAI-Responses account rate limited in axios error handler:',
-              markError
-            )
-          }
-
-          const rateLimitedResponse = this._buildRateLimitResponse(errorMessage, resetsInSeconds)
-          return res.status(429).json(rateLimitedResponse)
         }
 
         return res.status(status).json(errorData)
@@ -726,7 +557,8 @@ class OpenAIResponsesRelayService {
             cacheCreateTokens,
             cacheReadTokens,
             modelToRecord,
-            account.id
+            account.id,
+            'openai-responses'
           )
 
           logger.info(
@@ -854,7 +686,8 @@ class OpenAIResponsesRelayService {
           cacheCreateTokens,
           cacheReadTokens,
           actualModel,
-          account.id
+          account.id,
+          'openai-responses'
         )
 
         logger.info(

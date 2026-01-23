@@ -11,6 +11,7 @@ const logger = require('./utils/logger')
 const redis = require('./models/redis')
 const pricingService = require('./services/pricingService')
 const cacheMonitor = require('./utils/cacheMonitor')
+const { getSafeMessage } = require('./utils/errorSanitizer')
 
 // Import routes
 const apiRoutes = require('./routes/api')
@@ -50,7 +51,38 @@ class Application {
       // 🔗 连接Redis
       logger.info('🔄 Connecting to Redis...')
       await redis.connect()
-      logger.success('✅ Redis connected successfully')
+      logger.success('Redis connected successfully')
+
+      // 📊 检查数据迁移（版本 > 1.1.250 时执行）
+      const { getAppVersion, versionGt } = require('./utils/commonHelper')
+      const currentVersion = getAppVersion()
+      const migratedVersion = await redis.getMigratedVersion()
+      if (versionGt(currentVersion, '1.1.250') && versionGt(currentVersion, migratedVersion)) {
+        logger.info(`🔄 检测到新版本 ${currentVersion}，检查数据迁移...`)
+        try {
+          if (await redis.needsGlobalStatsMigration()) {
+            await redis.migrateGlobalStats()
+          }
+          await redis.cleanupSystemMetrics() // 清理过期的系统分钟统计
+        } catch (err) {
+          logger.error('⚠️ 数据迁移出错，但不影响启动:', err.message)
+        }
+        await redis.setMigratedVersion(currentVersion)
+        logger.success(`✅ 数据迁移完成，版本: ${currentVersion}`)
+      }
+
+      // 📅 后台检查月份索引完整性（不阻塞启动）
+      redis.ensureMonthlyMonthsIndex().catch((err) => {
+        logger.error('📅 月份索引检查失败:', err.message)
+      })
+
+      // 📊 后台异步迁移 usage 索引（不阻塞启动）
+      redis.migrateUsageIndex().catch((err) => {
+        logger.error('📊 Background usage index migration failed:', err)
+      })
+
+      // 📊 迁移 alltime 模型统计（阻塞式，确保数据完整）
+      await redis.migrateAlltimeModelStats()
 
       // 💳 初始化账户余额查询服务（Provider 注册）
       try {
@@ -94,6 +126,15 @@ class Application {
         )
       }
 
+      // 💰 启动回填：本周 Claude 周费用（用于 API Key 维度周限额）
+      try {
+        logger.info('💰 Backfilling current-week Claude weekly cost...')
+        const weeklyClaudeCostInitService = require('./services/weeklyClaudeCostInitService')
+        await weeklyClaudeCostInitService.backfillCurrentWeekClaudeCosts()
+      } catch (error) {
+        logger.warn('⚠️ Weekly Claude cost backfill failed (startup continues):', error.message)
+      }
+
       // 🕐 初始化Claude账户会话窗口
       logger.info('🕐 Initializing Claude account session windows...')
       const claudeAccountService = require('./services/claudeAccountService')
@@ -103,6 +144,18 @@ class Application {
       logger.info('📊 Initializing cost rank service...')
       const costRankService = require('./services/costRankService')
       await costRankService.initialize()
+
+      // 🔍 初始化 API Key 索引服务（用于分页查询优化）
+      logger.info('🔍 Initializing API Key index service...')
+      const apiKeyIndexService = require('./services/apiKeyIndexService')
+      apiKeyIndexService.init(redis)
+      await apiKeyIndexService.checkAndRebuild()
+
+      // 📁 确保账户分组反向索引存在（后台执行，不阻塞启动）
+      const accountGroupService = require('./services/accountGroupService')
+      accountGroupService.ensureReverseIndexes().catch((err) => {
+        logger.error('📁 Account group reverse index migration failed:', err)
+      })
 
       // 超早期拦截 /admin-next/ 请求 - 在所有中间件之前
       this.app.use((req, res, next) => {
@@ -377,7 +430,7 @@ class Application {
           logger.error('❌ Health check failed:', { error: error.message, stack: error.stack })
           res.status(503).json({
             status: 'unhealthy',
-            error: error.message,
+            error: getSafeMessage(error),
             timestamp: new Date().toISOString()
           })
         }
@@ -413,7 +466,7 @@ class Application {
       // 🚨 错误处理
       this.app.use(errorHandler)
 
-      logger.success('✅ Application initialized successfully')
+      logger.success('Application initialized successfully')
     } catch (error) {
       logger.error('💥 Application initialization failed:', error)
       throw error
@@ -448,7 +501,7 @@ class Application {
 
       await redis.setSession('admin_credentials', adminCredentials)
 
-      logger.success('✅ Admin credentials loaded from init.json (single source of truth)')
+      logger.success('Admin credentials loaded from init.json (single source of truth)')
       logger.info(`📋 Admin username: ${adminCredentials.username}`)
     } catch (error) {
       logger.error('❌ Failed to initialize admin credentials:', {
@@ -465,22 +518,24 @@ class Application {
       const client = redis.getClient()
 
       // 获取所有 session:* 键
-      const sessionKeys = await client.keys('session:*')
+      const sessionKeys = await redis.scanKeys('session:*')
+      const dataList = await redis.batchHgetallChunked(sessionKeys)
 
       let validCount = 0
       let invalidCount = 0
 
-      for (const key of sessionKeys) {
+      for (let i = 0; i < sessionKeys.length; i++) {
+        const key = sessionKeys[i]
         // 跳过 admin_credentials（系统凭据）
         if (key === 'session:admin_credentials') {
           continue
         }
 
-        const sessionData = await client.hgetall(key)
+        const sessionData = dataList[i]
 
         // 检查会话完整性：必须有 username 和 loginTime
-        const hasUsername = !!sessionData.username
-        const hasLoginTime = !!sessionData.loginTime
+        const hasUsername = !!sessionData?.username
+        const hasLoginTime = !!sessionData?.loginTime
 
         if (!hasUsername || !hasLoginTime) {
           // 无效会话 - 可能是漏洞利用创建的伪造会话
@@ -495,11 +550,11 @@ class Application {
       }
 
       if (invalidCount > 0) {
-        logger.security(`🔒 Startup security check: Removed ${invalidCount} invalid sessions`)
+        logger.security(`Startup security check: Removed ${invalidCount} invalid sessions`)
       }
 
       logger.success(
-        `✅ Session cleanup completed: ${validCount} valid, ${invalidCount} invalid removed`
+        `Session cleanup completed: ${validCount} valid, ${invalidCount} invalid removed`
       )
     } catch (error) {
       // 清理失败不应阻止服务启动
@@ -548,105 +603,23 @@ class Application {
     try {
       await this.initialize()
 
-      const httpEnabled = config.server.httpEnabled !== false
-      const httpsEnabled = config.server.https?.enabled === true
-
-      // 验证至少启用一个服务器
-      if (!httpEnabled && !httpsEnabled) {
-        throw new Error(
-          '至少需要启用 HTTP 或 HTTPS 服务器之一 (HTTP_ENABLED=true or HTTPS_ENABLED=true)'
+      this.server = this.app.listen(config.server.port, config.server.host, () => {
+        logger.start(`Claude Relay Service started on ${config.server.host}:${config.server.port}`)
+        logger.info(
+          `🌐 Web interface: http://${config.server.host}:${config.server.port}/admin-next/api-stats`
         )
-      }
+        logger.info(
+          `🔗 API endpoint: http://${config.server.host}:${config.server.port}/api/v1/messages`
+        )
+        logger.info(`⚙️  Admin API: http://${config.server.host}:${config.server.port}/admin`)
+        logger.info(`🏥 Health check: http://${config.server.host}:${config.server.port}/health`)
+        logger.info(`📊 Metrics: http://${config.server.host}:${config.server.port}/metrics`)
+      })
 
-      logger.info(
-        `🚀 Server mode: ${httpEnabled ? 'HTTP' : ''}${httpEnabled && httpsEnabled ? ' + ' : ''}${httpsEnabled ? 'HTTPS' : ''}`
-      )
-
-      // 🔒 启动 HTTPS 服务器
-      if (httpsEnabled) {
-        logger.info('🔒 Initializing HTTPS server...')
-
-        const https = require('https')
-        const fs = require('fs')
-
-        try {
-          // 验证证书文件
-          if (!fs.existsSync(config.server.https.certPath)) {
-            throw new Error(`Certificate file not found: ${config.server.https.certPath}`)
-          }
-          if (!fs.existsSync(config.server.https.keyPath)) {
-            throw new Error(`Private key file not found: ${config.server.https.keyPath}`)
-          }
-
-          const httpsOptions = {
-            cert: fs.readFileSync(config.server.https.certPath),
-            key: fs.readFileSync(config.server.https.keyPath)
-          }
-
-          // 创建 HTTPS 服务器
-          this.httpsServer = https.createServer(httpsOptions, this.app)
-
-          const serverTimeout = 600000 // 默认10分钟
-          this.httpsServer.timeout = serverTimeout
-          this.httpsServer.keepAliveTimeout = serverTimeout + 5000
-
-          this.httpsServer.listen(config.server.https.port, config.server.host, () => {
-            logger.start(
-              `🔒 HTTPS server started on ${config.server.host}:${config.server.https.port}`
-            )
-            logger.info(
-              `🌐 Web interface: https://${config.server.host}:${config.server.https.port}/admin-next/api-stats`
-            )
-            logger.info(
-              `🔗 API endpoint: https://${config.server.host}:${config.server.https.port}/api/v1/messages`
-            )
-            logger.info(
-              `⚙️  Admin API: https://${config.server.host}:${config.server.https.port}/admin`
-            )
-            logger.info(
-              `🏥 Health check: https://${config.server.host}:${config.server.https.port}/health`
-            )
-            logger.info(
-              `📊 Metrics: https://${config.server.host}:${config.server.https.port}/metrics`
-            )
-          })
-
-          logger.info(
-            `⏱️  HTTPS server timeout set to ${serverTimeout}ms (${serverTimeout / 1000}s)`
-          )
-        } catch (certError) {
-          logger.error('💥 Failed to load SSL certificates:', certError)
-          logger.error('   Please check HTTPS_CERT_PATH and HTTPS_KEY_PATH configuration')
-          throw certError
-        }
-      }
-
-      // 🌐 启动 HTTP 服务器
-      if (httpEnabled) {
-        logger.info('🌐 Initializing HTTP server...')
-
-        this.httpServer = this.app.listen(config.server.port, config.server.host, () => {
-          logger.start(`🚀 HTTP server started on ${config.server.host}:${config.server.port}`)
-          logger.info(
-            `🌐 Web interface: http://${config.server.host}:${config.server.port}/admin-next/api-stats`
-          )
-          logger.info(
-            `🔗 API endpoint: http://${config.server.host}:${config.server.port}/api/v1/messages`
-          )
-          logger.info(`⚙️  Admin API: http://${config.server.host}:${config.server.port}/admin`)
-          logger.info(`🏥 Health check: http://${config.server.host}:${config.server.port}/health`)
-          logger.info(`📊 Metrics: http://${config.server.host}:${config.server.port}/metrics`)
-        })
-
-        const serverTimeout = 600000 // 默认10分钟
-        this.httpServer.timeout = serverTimeout
-        this.httpServer.keepAliveTimeout = serverTimeout + 5000
-
-        logger.info(`⏱️  HTTP server timeout set to ${serverTimeout}ms (${serverTimeout / 1000}s)`)
-      }
-
-      // 设置 this.server 引用以保持向后兼容
-      this.server = this.httpsServer || this.httpServer
+      const serverTimeout = 600000 // 默认10分钟
+      this.server.timeout = serverTimeout
+      this.server.keepAliveTimeout = serverTimeout + 5000 // keepAlive 稍长一点
+      logger.info(`⏱️  Server timeout set to ${serverTimeout}ms (${serverTimeout / 1000}s)`)
 
       // 🔄 定期清理任务
       this.startCleanupTasks()
@@ -686,7 +659,7 @@ class Application {
         logger.info(`📊 Cache System - Registered: ${stats.cacheCount} caches`)
       }, 5000)
 
-      logger.success('✅ Cache monitoring initialized')
+      logger.success('Cache monitoring initialized')
     } catch (error) {
       logger.error('❌ Failed to initialize cache monitoring:', error)
       // 不阻止应用启动
@@ -735,7 +708,7 @@ class Application {
     // 每分钟主动清理所有过期的并发项，不依赖请求触发
     setInterval(async () => {
       try {
-        const keys = await redis.keys('concurrency:*')
+        const keys = await redis.scanKeys('concurrency:*')
         if (keys.length === 0) {
           return
         }
@@ -857,125 +830,97 @@ class Application {
     const shutdown = async (signal) => {
       logger.info(`🛑 Received ${signal}, starting graceful shutdown...`)
 
-      let serversToClose = 0
-      let serversClosed = 0
+      if (this.server) {
+        this.server.close(async () => {
+          logger.info('🚪 HTTP server closed')
 
-      const performCleanup = async () => {
-        // 清理 pricing service 的文件监听器
-        try {
-          pricingService.cleanup()
-          logger.info('💰 Pricing service cleaned up')
-        } catch (error) {
-          logger.error('❌ Error cleaning up pricing service:', error)
-        }
-
-        // 清理 model service 的文件监听器
-        try {
-          const modelService = require('./services/modelService')
-          modelService.cleanup()
-          logger.info('📋 Model service cleaned up')
-        } catch (error) {
-          logger.error('❌ Error cleaning up model service:', error)
-        }
-
-        // 停止限流清理服务
-        try {
-          const rateLimitCleanupService = require('./services/rateLimitCleanupService')
-          rateLimitCleanupService.stop()
-          logger.info('🚨 Rate limit cleanup service stopped')
-        } catch (error) {
-          logger.error('❌ Error stopping rate limit cleanup service:', error)
-        }
-
-        // 停止用户消息队列清理服务和续租定时器
-        try {
-          const userMessageQueueService = require('./services/userMessageQueueService')
-          userMessageQueueService.stopAllRenewalTimers()
-          userMessageQueueService.stopCleanupTask()
-          logger.info('📬 User message queue service stopped')
-        } catch (error) {
-          logger.error('❌ Error stopping user message queue service:', error)
-        }
-
-        // 🔢 清理所有并发计数（Phase 1 修复：防止重启泄漏）
-        try {
-          logger.info('🔢 Cleaning up all concurrency counters...')
-          const keys = await redis.keys('concurrency:*')
-          if (keys.length > 0) {
-            await redis.client.del(...keys)
-            logger.info(`✅ Cleaned ${keys.length} concurrency keys`)
-          } else {
-            logger.info('✅ No concurrency keys to clean')
+          // 清理 pricing service 的文件监听器
+          try {
+            pricingService.cleanup()
+            logger.info('💰 Pricing service cleaned up')
+          } catch (error) {
+            logger.error('❌ Error cleaning up pricing service:', error)
           }
-        } catch (error) {
-          logger.error('❌ Error cleaning up concurrency counters:', error)
-          // 不阻止退出流程
-        }
 
-        // 停止费用排序索引服务
-        try {
-          const costRankService = require('./services/costRankService')
-          costRankService.shutdown()
-          logger.info('📊 Cost rank service stopped')
-        } catch (error) {
-          logger.error('❌ Error stopping cost rank service:', error)
-        }
+          // 清理 model service 的文件监听器
+          try {
+            const modelService = require('./services/modelService')
+            modelService.cleanup()
+            logger.info('📋 Model service cleaned up')
+          } catch (error) {
+            logger.error('❌ Error cleaning up model service:', error)
+          }
 
-        // 停止账户定时测试调度器
-        try {
-          const accountTestSchedulerService = require('./services/accountTestSchedulerService')
-          accountTestSchedulerService.stop()
-          logger.info('🧪 Account test scheduler service stopped')
-        } catch (error) {
-          logger.error('❌ Error stopping account test scheduler service:', error)
-        }
+          // 停止限流清理服务
+          try {
+            const rateLimitCleanupService = require('./services/rateLimitCleanupService')
+            rateLimitCleanupService.stop()
+            logger.info('🚨 Rate limit cleanup service stopped')
+          } catch (error) {
+            logger.error('❌ Error stopping rate limit cleanup service:', error)
+          }
 
-        try {
-          await redis.disconnect()
-          logger.info('👋 Redis disconnected')
-        } catch (error) {
-          logger.error('❌ Error disconnecting Redis:', error)
-        }
+          // 停止用户消息队列清理服务
+          try {
+            const userMessageQueueService = require('./services/userMessageQueueService')
+            userMessageQueueService.stopCleanupTask()
+            logger.info('📬 User message queue service stopped')
+          } catch (error) {
+            logger.error('❌ Error stopping user message queue service:', error)
+          }
 
-        logger.success('✅ Graceful shutdown completed')
+          // 停止费用排序索引服务
+          try {
+            const costRankService = require('./services/costRankService')
+            costRankService.shutdown()
+            logger.info('📊 Cost rank service stopped')
+          } catch (error) {
+            logger.error('❌ Error stopping cost rank service:', error)
+          }
+
+          // 停止账户定时测试调度器
+          try {
+            const accountTestSchedulerService = require('./services/accountTestSchedulerService')
+            accountTestSchedulerService.stop()
+            logger.info('🧪 Account test scheduler service stopped')
+          } catch (error) {
+            logger.error('❌ Error stopping account test scheduler service:', error)
+          }
+
+          // 🔢 清理所有并发计数（Phase 1 修复：防止重启泄漏）
+          try {
+            logger.info('🔢 Cleaning up all concurrency counters...')
+            const keys = await redis.scanKeys('concurrency:*')
+            if (keys.length > 0) {
+              await redis.batchDelChunked(keys)
+              logger.info(`✅ Cleaned ${keys.length} concurrency keys`)
+            } else {
+              logger.info('✅ No concurrency keys to clean')
+            }
+          } catch (error) {
+            logger.error('❌ Error cleaning up concurrency counters:', error)
+            // 不阻止退出流程
+          }
+
+          try {
+            await redis.disconnect()
+            logger.info('👋 Redis disconnected')
+          } catch (error) {
+            logger.error('❌ Error disconnecting Redis:', error)
+          }
+
+          logger.success('Graceful shutdown completed')
+          process.exit(0)
+        })
+
+        // 强制关闭超时
+        setTimeout(() => {
+          logger.warn('⚠️ Forced shutdown due to timeout')
+          process.exit(1)
+        }, 10000)
+      } else {
         process.exit(0)
       }
-
-      const onServerClosed = () => {
-        serversClosed++
-        if (serversClosed === serversToClose) {
-          performCleanup()
-        }
-      }
-
-      // 关闭 HTTPS 服务器
-      if (this.httpsServer) {
-        serversToClose++
-        this.httpsServer.close(() => {
-          logger.info('🔒 HTTPS server closed')
-          onServerClosed()
-        })
-      }
-
-      // 关闭 HTTP 服务器
-      if (this.httpServer) {
-        serversToClose++
-        this.httpServer.close(() => {
-          logger.info('🌐 HTTP server closed')
-          onServerClosed()
-        })
-      }
-
-      // 如果没有服务器在运行，直接退出
-      if (serversToClose === 0) {
-        await performCleanup()
-      }
-
-      // 强制关闭超时
-      setTimeout(() => {
-        logger.warn('⚠️ Forced shutdown due to timeout')
-        process.exit(1)
-      }, 10000)
     }
 
     process.on('SIGTERM', () => shutdown('SIGTERM'))
