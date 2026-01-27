@@ -25,7 +25,8 @@ const RATE_LIMIT_PATTERNS = [
   '频率限制',
   '积分不足',
   '压力过大',
-  '额度已用完'
+  '额度已用完',
+  'Internal server error'
 ]
 
 /**
